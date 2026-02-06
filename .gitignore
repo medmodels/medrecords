@@ -1,0 +1,14 @@
+.venv
+.DS_Store
+*.egg-info
+__pycache__
+*.pyc
+*.log
+dist
+.vscode
+.devcontainer
+.python-version
+docs/api/_autosummary/*
+.coverage
+coverage.xml
+coverage/*
