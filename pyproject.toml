@@ -25,7 +25,7 @@ classifiers = [
     'Topic :: Software Development',
     'Typing :: Typed',
 ]
-dependencies = ["graphrecords>=0.4.0"]
+dependencies = ["graphrecords>=0.4.1"]
 
 [project.urls]
 Repository = "https://github.com/medmodels/medrecords"
@@ -157,7 +157,7 @@ reportMissingModuleSource = false
 reportMissingTypeStubs = false
 enableTypeIgnoreComments = false
 
-[tool.pytest]
+[tool.pytest.ini_options]
 testpaths = "tests"
 
 [tool.coverage.report]
