@@ -25,7 +25,7 @@ classifiers = [
     'Topic :: Software Development',
     'Typing :: Typed',
 ]
-dependencies = ["graphrecords>=0.4.1"]
+dependencies = ["graphrecords>=0.4.1", "fhir-resources>=8.2.0"]
 
 [project.urls]
 Repository = "https://github.com/medmodels/medrecords"
@@ -57,7 +57,7 @@ dev = [
     { include-group = "docs" },
     { include-group = "tests" },
     "ruff>=0.4.9",
-    "pyright==1.1.408",
+    "pyright>=1.1.408",
 ]
 
 [build-system]
