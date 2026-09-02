@@ -2,9 +2,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import graphrecords as gr
 import polars as pl
 
+from medrecords.medrecord import MedRecord
 from medrecords.omop import OmopPlugin
 
 
@@ -266,31 +266,28 @@ class TestOmopPlugin(unittest.TestCase):
             folder = Path(temporary_directory)
             _create_vocabulary_folder(folder)
 
-            plugin = OmopPlugin(folder)
+            medrecord = MedRecord().add_plugin("omop", OmopPlugin(folder))
 
-            graphrecord = gr.GraphRecord()
-            plugin.initialize(graphrecord)
+            assert medrecord.node_count() > 0
+            assert medrecord.edge_count() > 0
 
-            assert graphrecord.node_count() > 0
-            assert graphrecord.edge_count() > 0
-
-            assert graphrecord.contains_group("OMOP_VOCABULARY")
-            assert graphrecord.contains_group("OMOP_CONCEPT")
-            assert graphrecord.contains_group("OMOP_DOMAIN")
-            assert graphrecord.contains_group("OMOP_CONCEPT_CLASS")
-            assert graphrecord.contains_group("OMOP_RELATIONSHIP")
-            assert graphrecord.contains_group("OMOP_VOCABULARY_CONCEPT")
-            assert graphrecord.contains_group("OMOP_CONCEPT_VOCABULARY")
-            assert graphrecord.contains_group("OMOP_DOMAIN_CONCEPT")
-            assert graphrecord.contains_group("OMOP_CONCEPT_DOMAIN")
-            assert graphrecord.contains_group("OMOP_CONCEPT_CLASS_CONCEPT")
-            assert graphrecord.contains_group("OMOP_CONCEPT_CONCEPT_CLASS")
-            assert graphrecord.contains_group("OMOP_RELATIONSHIP_CONCEPT")
-            assert graphrecord.contains_group("OMOP_RELATIONSHIP_REVERSE")
-            assert graphrecord.contains_group("OMOP_CONCEPT_ANCESTOR")
-            assert graphrecord.contains_group("OMOP_CONCEPT_RELATIONSHIP")
-            assert graphrecord.contains_group("OMOP_CONCEPT_SYNONYM")
-            assert graphrecord.contains_group("OMOP_DRUG_STRENGTH")
+            assert medrecord.contains_group("OMOP_VOCABULARY")
+            assert medrecord.contains_group("OMOP_CONCEPT")
+            assert medrecord.contains_group("OMOP_DOMAIN")
+            assert medrecord.contains_group("OMOP_CONCEPT_CLASS")
+            assert medrecord.contains_group("OMOP_RELATIONSHIP")
+            assert medrecord.contains_group("OMOP_VOCABULARY_CONCEPT")
+            assert medrecord.contains_group("OMOP_CONCEPT_VOCABULARY")
+            assert medrecord.contains_group("OMOP_DOMAIN_CONCEPT")
+            assert medrecord.contains_group("OMOP_CONCEPT_DOMAIN")
+            assert medrecord.contains_group("OMOP_CONCEPT_CLASS_CONCEPT")
+            assert medrecord.contains_group("OMOP_CONCEPT_CONCEPT_CLASS")
+            assert medrecord.contains_group("OMOP_RELATIONSHIP_CONCEPT")
+            assert medrecord.contains_group("OMOP_RELATIONSHIP_REVERSE")
+            assert medrecord.contains_group("OMOP_CONCEPT_ANCESTOR")
+            assert medrecord.contains_group("OMOP_CONCEPT_RELATIONSHIP")
+            assert medrecord.contains_group("OMOP_CONCEPT_SYNONYM")
+            assert medrecord.contains_group("OMOP_DRUG_STRENGTH")
 
     def test_concept_vocabulary_edge_prefixes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
