@@ -1,23 +1,33 @@
-"""OMOP vocabulary plugin for GraphRecord."""
+"""OMOP vocabulary plugin for MedRecord."""
 
-from pathlib import Path
-from typing import List, Optional, Tuple
+from __future__ import annotations
 
-import graphrecords as gr
+from typing import TYPE_CHECKING, List, Optional, Tuple
+
 import polars as pl
-from graphrecords import Plugin
-from graphrecords.types import (
-    Group,
-    PolarsEdgeDataFrameInput,
-    PolarsNodeDataFrameInput,
+from graphrecords.plugins import (
+    AddEdgesInGroup,
+    AddNodesInGroup,
+    EdgeBatch,
+    NodeBatch,
 )
+
+from medrecords.plugin import Plugin
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from graphrecords.plugins import Changes
+    from graphrecords.types import GroupIndex
+
+    from medrecords.medrecord import MedRecord
 
 
 class OmopPlugin(Plugin):
-    """Plugin that loads OMOP vocabulary tables into a GraphRecord."""
+    """Plugin that loads OMOP vocabulary tables into a MedRecord."""
 
-    vocabulary_nodes: List[Tuple[PolarsNodeDataFrameInput, Group]]
-    vocabulary_edges: List[Tuple[PolarsEdgeDataFrameInput, Group]]
+    vocabulary_nodes: List[Tuple[Tuple[pl.DataFrame, str], GroupIndex]]
+    vocabulary_edges: List[Tuple[Tuple[pl.DataFrame, str, str], GroupIndex]]
 
     def __init__(
         self,
@@ -223,14 +233,23 @@ class OmopPlugin(Plugin):
             ),
         ]
 
-    def initialize(self, graphrecord: gr.GraphRecord) -> None:
-        """Adds OMOP vocabulary nodes and edges to the GraphRecord.
+    def initialize(self, medrecord: MedRecord) -> Changes:
+        """Adds OMOP vocabulary nodes and edges to the MedRecord.
 
         Args:
-            graphrecord (gr.GraphRecord): The GraphRecord instance to populate.
-        """
-        for node_df, group in self.vocabulary_nodes:
-            graphrecord.add_nodes_polars(node_df, group=group)
+            medrecord (MedRecord): The MedRecord the plugin is added to.
 
-        for edge_df, group in self.vocabulary_edges:
-            graphrecord.add_edges_polars(edge_df, group=group)
+        Returns:
+            Changes: The changes that add the vocabulary nodes and edges, each in
+                its group.
+        """
+        node_changes = [
+            AddNodesInGroup(NodeBatch(node_source), group)
+            for node_source, group in self.vocabulary_nodes
+        ]
+        edge_changes = [
+            AddEdgesInGroup(EdgeBatch(edge_source), group)
+            for edge_source, group in self.vocabulary_edges
+        ]
+
+        return [*node_changes, *edge_changes]
