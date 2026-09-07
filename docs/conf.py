@@ -14,8 +14,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent))
 
 # Project information
-project = "MedModels"
-author = "Limebit GmbH"
+project = "MedRecords"
+author = "MedModels GmbH"
 copyright = f"{date.today().year}, {author}"
 version = f"v{importlib.metadata.version(project)}"
 
@@ -39,7 +39,7 @@ extensions = [
 exclude_patterns = ["_build"]
 extlinks = {
     "doi": ("https://doi.org/%s", "DOI: %s"),
-    "gh-issue": ("https://github.com/limebit/medmodels/issues/%s", "issue #%s"),
+    "gh-issue": ("https://github.com/medmodels/medrecords/issues/%s", "issue #%s"),
     "gh-user": ("https://github.com/%s", "@%s"),
 }
 
@@ -110,12 +110,12 @@ myst_url_schemes = {
     "wiki": "https://en.wikipedia.org/wiki/{{path}}#{{fragment}}",
     "doi": "https://doi.org/{{path}}",
     "gh-pr": {
-        "url": "https://github.com/limebit/medmodels/pull/{{path}}#{{fragment}}",
+        "url": "https://github.com/medmodels/medrecords/pull/{{path}}#{{fragment}}",
         "title": "PR #{{path}}",
         "classes": ["github"],
     },
     "gh-issue": {
-        "url": "https://github.com/limebit/medmodels/issues/{{path}}#{{fragment}}",
+        "url": "https://github.com/medmodels/medrecords/issues/{{path}}#{{fragment}}",
         "title": "Issue #{{path}}",
         "classes": ["github"],
     },
@@ -138,13 +138,13 @@ myst_substitutions = {
 
 # HTML output options
 html_theme = "pydata_sphinx_theme"
-html_logo = "https://raw.githubusercontent.com/limebit/medmodels-static/main/logos/logo_color.svg"
-html_favicon = "https://raw.githubusercontent.com/limebit/medmodels-static/main/icons/favicon-32x32.png"
-html_title = "MedModels Documentation"
+html_logo = "https://raw.githubusercontent.com/medmodels/medmodels-static/main/logos/logo_color.svg"
+html_favicon = "https://raw.githubusercontent.com/medmodels/medmodels-static/main/icons/favicon-32x32.png"
+html_title = "MedRecords Documentation"
 
 html_theme_options = {
     "show_toc_level": 2,
-    "github_url": "https://github.com/limebit/medmodels",
+    "github_url": "https://github.com/medmodels/medrecords",
     "use_edit_page_button": True,
     "navbar_start": ["navbar-logo", "version-switcher"],
     "navbar_end": ["navbar-icon-links", "theme-switcher"],
@@ -156,15 +156,15 @@ html_theme_options = {
     "primary_sidebar_end": ["indices.html"],
     "secondary_sidebar_items": ["page-toc"],
     "switcher": {
-        "json_url": "https://www.medmodels.de/docs/switcher.json",
+        "json_url": "https://www.medmodels.de/docs/medrecords/switcher.json",
         "version_match": version,
     },
     "show_version_warning_banner": False,
 }
 
 html_context = {
-    "github_user": "limebit",
-    "github_repo": "medmodels",
+    "github_user": "medmodels",
+    "github_repo": "medrecords",
     "github_version": "main",
     "doc_path": "docs",
     "default_mode": "dark",

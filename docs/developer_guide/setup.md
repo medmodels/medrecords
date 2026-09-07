@@ -1,6 +1,6 @@
 # Setting up MedRecords
 
-MedModels is built using Python. To contribute effectively, you'll need to set up a development environment for it.
+MedRecords is built using Python. To contribute effectively, you'll need to set up a development environment for it.
 
 **Requirements:**
 
@@ -8,7 +8,7 @@ MedModels is built using Python. To contribute effectively, you'll need to set u
 
 **Using the Makefile:**
 
-MedModels utilizes a `Makefile` to manage development tasks. Here's a breakdown of the available commands and their functionalities:
+MedRecords utilizes a `Makefile` to manage development tasks. Here's a breakdown of the available commands and their functionalities:
 
 - **install:** Sets up the virtual environment and installs the project in editable mode (meaning changes to the code are reflected without needing to reinstall).
 - **install-dev:** Similar to `install`, but additionally installs development dependencies needed for running tests, linting, code formatting and the documentation.

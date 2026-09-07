@@ -1,8 +1,12 @@
 <div align="center">
   <img alt="Python Versions" src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue">
+  <a href="https://github.com/medmodels/medrecords/blob/main/LICENSE">
+    <img alt="MedRecords License" src="https://img.shields.io/github/license/medmodels/medrecords.svg">
+  </a>
   <a href="https://github.com/medmodels/medrecords/actions/workflows/testing.yml">
     <img src="https://github.com/medmodels/medrecords/actions/workflows/testing.yml/badge.svg?branch=main" alt="Tests">
   </a>
+  <img alt="Coverage percentage" src="https://raw.githubusercontent.com/medmodels/medrecords-static/refs/heads/main/icons/coverage-badge.svg">
   <a href="https://pypi.org/project/medrecords/">
     <img src="https://img.shields.io/pypi/v/medrecords" alt="PyPI Version">
   </a>
