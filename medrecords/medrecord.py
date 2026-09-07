@@ -108,6 +108,15 @@ class MedRecord:
         return instance
 
     @property
+    def graphrecord(self) -> GraphRecord:
+        """The GraphRecord the MedRecord holds.
+
+        Returns:
+            GraphRecord: The GraphRecord holding the contents of the MedRecord.
+        """
+        return self._graphrecord
+
+    @property
     def plugins(self) -> List[PluginName]:
         """The names of the plugins attached to the MedRecord.
 

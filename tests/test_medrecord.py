@@ -70,6 +70,13 @@ class TestMedRecord(unittest.TestCase):
 
         assert loaded == medrecord
 
+    def test_graphrecord(self) -> None:
+        graphrecord = GraphRecord().add_nodes([(1, {"name": "a"})])
+
+        medrecord = MedRecord.from_graphrecord(graphrecord)
+
+        assert medrecord.graphrecord is graphrecord
+
     def test_plugins(self) -> None:
         medrecord = MedRecord()
 
