@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+from importlib.metadata import version
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Optional, TypedDict, Union
 
@@ -29,7 +30,10 @@ class _Options(TypedDict):
     kind: str
     run_details: bool
     section_breaks: bool
+    parameter_lines: bool
+    failure_details: bool
     company: Company
+    version: str
 
 
 #: The company block a document prints unless another one is given.
@@ -58,6 +62,8 @@ class Document:
     _kind: str
     _run_details: bool
     _section_breaks: bool
+    _parameter_lines: bool
+    _failure_details: bool
 
     def __init__(
         self,
@@ -69,6 +75,8 @@ class Document:
         kind: str = "Evaluation report",
         run_details: bool = True,
         section_breaks: bool = True,
+        parameter_lines: bool = True,
+        failure_details: bool = True,
     ) -> None:
         """Initializes a document of a report.
 
@@ -88,6 +96,12 @@ class Document:
                 analytic and every derivation. Defaults to True.
             section_breaks (bool): Whether to start a new page for every
                 top-level group. Defaults to True.
+            parameter_lines (bool): Whether to print the line with the
+                parameters of every analytic and derivation under its heading.
+                Defaults to True.
+            failure_details (bool): Whether to print the exception type and
+                message of every failure, or only that the entry was not
+                computed. Defaults to True.
         """
         self._report = report
         self._template = None if template is None else Path(template)
@@ -96,6 +110,8 @@ class Document:
         self._kind = kind
         self._run_details = run_details
         self._section_breaks = section_breaks
+        self._parameter_lines = parameter_lines
+        self._failure_details = failure_details
 
     def to_pdf(self, path: Union[str, os.PathLike[str]]) -> None:
         """Typesets the document to a PDF.
@@ -136,27 +152,20 @@ class Document:
             )
 
     def _logo_text(self) -> str:
-        """Reads the logo as SVG text.
-
-        Returns:
-            str: The logo as SVG text, or "" for a document without one.
-        """
         if self._logo is None:
             return ""
 
         return self._logo.read_text(encoding="utf-8")
 
     def _options(self) -> _Options:
-        """Collects the settings a template reads.
-
-        Returns:
-            _Options: The settings as they are serialized to JSON.
-        """
         return {
             "kind": self._kind,
             "run_details": self._run_details,
             "section_breaks": self._section_breaks,
+            "parameter_lines": self._parameter_lines,
+            "failure_details": self._failure_details,
             "company": self._company,
+            "version": version("medrecords"),
         }
 
     def __repr__(self) -> str:

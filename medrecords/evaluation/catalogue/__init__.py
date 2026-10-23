@@ -3,6 +3,7 @@ from medrecords.evaluation.catalogue.attributes import (
     AttributeCompleteness,
     AttributeCounts,
     AttributeDistribution,
+    AttributeHistogram,
     AttributeMax,
     AttributeMean,
     AttributeMedian,
@@ -11,6 +12,14 @@ from medrecords.evaluation.catalogue.attributes import (
     AttributeSum,
     AttributeUniqueValues,
     IndexType,
+)
+from medrecords.evaluation.catalogue.conclusions import (
+    AnalyticsFailed,
+    ChecksFailed,
+    ChecksRun,
+    FailedChecks,
+    KeyedTable,
+    Mean,
 )
 from medrecords.evaluation.catalogue.quality import (
     AttributeOrder,
@@ -25,10 +34,12 @@ from medrecords.evaluation.catalogue.structure import (
 )
 
 __all__ = [
+    "AnalyticsFailed",
     "AttributeAnalytic",
     "AttributeCompleteness",
     "AttributeCounts",
     "AttributeDistribution",
+    "AttributeHistogram",
     "AttributeMax",
     "AttributeMean",
     "AttributeMedian",
@@ -39,9 +50,14 @@ __all__ = [
     "AttributeSum",
     "AttributeUniqueValues",
     "AttributeUniqueness",
+    "ChecksFailed",
+    "ChecksRun",
     "EdgesPerNode",
     "ElementCount",
+    "FailedChecks",
     "GroupSizes",
     "IndexType",
+    "KeyedTable",
+    "Mean",
     "UnlinkedNodes",
 ]

@@ -163,6 +163,11 @@ reportMissingModuleSource = false
 reportMissingTypeStubs = false
 enableTypeIgnoreComments = false
 
+[[tool.pyright.executionEnvironments]]
+root = "medrecords/evaluation"
+extraPaths = ["."]
+reportIncompatibleMethodOverride = true
+
 [tool.pytest.ini_options]
 testpaths = "tests"
 

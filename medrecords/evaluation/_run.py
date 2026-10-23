@@ -9,7 +9,10 @@ from typing import (
     TYPE_CHECKING,
     Callable,
     Dict,
+    List,
+    Mapping,
     Optional,
+    Tuple,
     TypeAlias,
     TypedDict,
     Union,
@@ -17,22 +20,30 @@ from typing import (
 
 from graphrecords import QueryError
 
-from medrecords.evaluation.report import (
+from medrecords.evaluation.entry import (
     AnalyticEntry,
+    DerivationEntry,
     Failure,
+    GroupEntry,
     InputEntry,
-    Report,
+    KeyedAnalyticEntry,
+    KeyedResult,
 )
+from medrecords.evaluation.report import Report
 
 if TYPE_CHECKING:
+    from graphrecords import Value
+
     from medrecords.evaluation.analytic import (
         Analytic,
+        Derivation,
+        DerivedType,
         Detail,
         InputsType,
         ReportValue,
     )
+    from medrecords.evaluation.entry import EntryPath
     from medrecords.evaluation.group import EvaluationGroup
-    from medrecords.evaluation.report import EntryPath
 
 
 class OnFailure(Enum):
@@ -42,16 +53,20 @@ class OnFailure(Enum):
     Raise = auto()
 
 
-class ProgressArgs(TypedDict):
-    """Arguments for progress handling functions, filled after every analytic."""
+class ProgressArguments(TypedDict):
+    """Arguments for progress handling functions, filled after every analytic run.
+
+    An analytic run across keyed inputs reports once per key, with the keyed
+    result as what finished.
+    """
 
     path: EntryPath
-    entry: AnalyticEntry
+    finished: Union[AnalyticEntry, KeyedResult]
     completed: int
 
 
 #: A type alias for a handling function called after every analytic finishes.
-ProgressHandler: TypeAlias = Callable[[ProgressArgs], None]
+ProgressHandler: TypeAlias = Callable[[ProgressArguments], None]
 
 
 class Run:
@@ -84,7 +99,10 @@ class Run:
         group: EvaluationGroup[InputsType],
         inputs: InputsType,
     ) -> Report:
-        """Runs a group from top to bottom and collects its report.
+        """Runs a group and collects its report.
+
+        The group's analytics and nested groups run in definition order and
+        its conclusions after them.
 
         Args:
             name (str): The name of the evaluation; the name of the report.
@@ -97,19 +115,23 @@ class Run:
         """
         started_at = datetime.now(timezone.utc)
         clock = perf_counter()
-        entries = group._entries(self, inputs, ())
+        root = GroupEntry(
+            name, name, description, InputEntry._from_inputs(inputs), None, []
+        )
+        filled = group._filled(self, inputs, (), root)
+
         return Report(
             name,
             description,
-            InputEntry._from_inputs(inputs),
-            entries,
+            filled.inputs,
+            filled.entries,
             started_at,
             timedelta(seconds=perf_counter() - clock),
         )
 
     def _analytic(
         self,
-        analytic: Analytic[InputsType],
+        analytic: Analytic[InputsType, ReportValue],
         inputs: InputsType,
         path: EntryPath,
         title: Optional[str],
@@ -118,7 +140,7 @@ class Run:
         """Computes an analytic, times it, and records what it reported.
 
         Args:
-            analytic (Analytic[InputsType]): The analytic to compute.
+            analytic (Analytic[InputsType, ReportValue]): The analytic to compute.
             inputs (InputsType): What the analytic runs on.
             path (EntryPath): The names from the root to the analytic.
             title (Optional[str]): The heading the analytic was placed under, or
@@ -130,35 +152,20 @@ class Run:
             AnalyticEntry: The entry of the analytic.
         """
         name = path[-1]
-        parameters: Dict[str, Detail] = {}
-        result: Union[ReportValue, Failure]
-        error: Optional[Exception] = None
-        started: Optional[float] = None
-
-        try:
-            title = title or analytic.title() or name
-            description = description or analytic.description() or None
-            parameters = dict(analytic.parameters())
-            started = perf_counter()
-            computed = analytic.compute(inputs)
-
-            if isinstance(computed, QueryError):
-                result = Failure._from_exception(computed)
-                error = computed
-            else:
-                result = computed
-        except Exception as exception:
-            result = Failure._from_exception(exception)
-            error = exception
-
-        duration = (
-            timedelta()
-            if started is None
-            else timedelta(seconds=perf_counter() - started)
+        title, description, parameters, setup_error = self._described(
+            analytic, name, title, description
         )
-        entry = AnalyticEntry(
-            name, title or name, description, parameters, duration, result
-        )
+
+        if setup_error is None:
+            result, error, duration = self._computed(analytic, inputs)
+        else:
+            result, error, duration = (
+                Failure._from_exception(setup_error),
+                setup_error,
+                timedelta(),
+            )
+
+        entry = AnalyticEntry(name, title, description, parameters, duration, result)
 
         self._progress(path, entry)
 
@@ -167,26 +174,215 @@ class Run:
 
         return entry
 
-    def _progress(self, path: EntryPath, entry: AnalyticEntry) -> None:
-        """Counts a finished analytic and tells the progress handling function.
+    def _keyed_analytic(
+        self,
+        analytic: Analytic[InputsType, ReportValue],
+        inputs_by_key: Mapping[Value, InputsType],
+        path: EntryPath,
+        title: Optional[str],
+        description: Optional[str],
+    ) -> KeyedAnalyticEntry:
+        """Computes an analytic under every key and records what it reported.
+
+        The title, description and parameters are resolved once; when that
+        fails, every key records the failure and nothing is computed.
 
         Args:
+            analytic (Analytic[InputsType, ReportValue]): The analytic to compute.
+            inputs_by_key (Mapping[Value, InputsType]): What the analytic runs
+                on, by key.
             path (EntryPath): The names from the root to the analytic.
-            entry (AnalyticEntry): The entry the analytic filled in.
+            title (Optional[str]): The heading the analytic was placed under, or
+                None for the one the analytic gives itself.
+            description (Optional[str]): The text the analytic was placed with,
+                or None for the one the analytic gives itself.
+
+        Returns:
+            KeyedAnalyticEntry: The entry of the analytic.
         """
+        name = path[-1]
+        title, description, parameters, setup_error = self._described(
+            analytic, name, title, description
+        )
+        results: List[KeyedResult] = []
+
+        for key, inputs in inputs_by_key.items():
+            if setup_error is None:
+                results.append(self._keyed_result(analytic, key, inputs, path))
+            else:
+                keyed = KeyedResult(
+                    key, timedelta(), Failure._from_exception(setup_error)
+                )
+                results.append(keyed)
+                self._progress(path, keyed)
+
+        if setup_error is not None:
+            self._fail(setup_error)
+
+        return KeyedAnalyticEntry(name, title, description, parameters, results)
+
+    def _keyed_result(
+        self,
+        analytic: Analytic[InputsType, ReportValue],
+        key: Value,
+        inputs: InputsType,
+        path: EntryPath,
+    ) -> KeyedResult:
+        result, error, duration = self._computed(analytic, inputs)
+        keyed = KeyedResult(key, duration, result)
+
+        self._progress(path, keyed)
+
+        if error is not None:
+            self._fail(error)
+
+        return keyed
+
+    @staticmethod
+    def _described(
+        analytic: Analytic[InputsType, ReportValue],
+        name: Value,
+        title: Optional[str],
+        description: Optional[str],
+    ) -> Tuple[str, Optional[str], Dict[str, Detail], Optional[Exception]]:
+        """Resolves the heading, text and parameters an analytic is recorded with.
+
+        Args:
+            analytic (Analytic[InputsType, ReportValue]): The analytic.
+            name (Value): The name the analytic was placed under.
+            title (Optional[str]): The heading it was placed under, or None for
+                the one the analytic gives itself.
+            description (Optional[str]): The text it was placed with, or None
+                for the one the analytic gives itself.
+
+        Returns:
+            Tuple[str, Optional[str], Dict[str, Detail], Optional[Exception]]:
+                The heading, the text, the parameters, and the exception the
+                analytic raised while giving them, or None.
+        """
+        try:
+            title = title or analytic.title() or str(name)
+            description = description or analytic.description() or None
+            parameters = dict(analytic.parameters())
+        except Exception as error:
+            return title or str(name), description, {}, error
+
+        return title, description, parameters, None
+
+    @staticmethod
+    def _computed(
+        analytic: Analytic[InputsType, ReportValue], inputs: InputsType
+    ) -> Tuple[Union[ReportValue, Failure], Optional[Exception], timedelta]:
+        """Computes an analytic and times it.
+
+        A failure the query engine hands back in band counts as a failure like
+        an exception.
+
+        Args:
+            analytic (Analytic[InputsType, ReportValue]): The analytic to compute.
+            inputs (InputsType): What the analytic runs on.
+
+        Returns:
+            Tuple[Union[ReportValue, Failure], Optional[Exception], timedelta]:
+                The result or the recorded failure, the exception behind a
+                failure or None, and how long the computation took.
+        """
+        started = perf_counter()
+
+        try:
+            computed = analytic.compute(inputs)
+        except Exception as error:
+            duration = timedelta(seconds=perf_counter() - started)
+            return Failure._from_exception(error), error, duration
+
+        duration = timedelta(seconds=perf_counter() - started)
+
+        if isinstance(computed, QueryError):
+            return Failure._from_exception(computed), computed, duration
+
+        return computed, None, duration
+
+    def _derivation(
+        self, derivation: Derivation[InputsType, DerivedType], inputs: InputsType
+    ) -> Tuple[DerivationEntry, Union[DerivedType, Failure]]:
+        """Runs a derivation, times it, and records what it produced.
+
+        Args:
+            derivation (Derivation[InputsType, DerivedType]): The derivation to
+                run.
+            inputs (InputsType): What the derivation runs on.
+
+        Returns:
+            Tuple[DerivationEntry, Union[DerivedType, Failure]]: The recorded
+                run, and the derived inputs, or the failure the derivation
+                ended with.
+        """
+        parameters: Dict[str, Detail] = {}
+        started: Optional[float] = None
+
+        try:
+            parameters = dict(derivation.parameters())
+            started = perf_counter()
+            derived = derivation.derive(inputs)
+            summary = dict(derivation.summarize(derived))
+        except Exception as error:
+            failure = Failure._from_exception(error)
+            duration = (
+                timedelta()
+                if started is None
+                else timedelta(seconds=perf_counter() - started)
+            )
+            self._fail(error)
+            return DerivationEntry(parameters, {}, duration, failure), failure
+
+        completed = DerivationEntry(
+            parameters, summary, timedelta(seconds=perf_counter() - started), None
+        )
+        return completed, derived
+
+    def _derivations(
+        self,
+        derivation: Derivation[InputsType, DerivedType],
+        inputs_by_key: Mapping[Value, InputsType],
+    ) -> Tuple[Dict[Value, DerivationEntry], Dict[Value, DerivedType]]:
+        """Runs a derivation under every key and records every run.
+
+        A key whose derivation fails is recorded and left out of the derived
+        inputs.
+
+        Args:
+            derivation (Derivation[InputsType, DerivedType]): The derivation to
+                run.
+            inputs_by_key (Mapping[Value, InputsType]): What the derivation runs
+                on, by key.
+
+        Returns:
+            Tuple[Dict[Value, DerivationEntry], Dict[Value, DerivedType]]: The
+                derivation entries by key, and the derived inputs of the keys
+                that completed.
+        """
+        derivations: Dict[Value, DerivationEntry] = {}
+        derived: Dict[Value, DerivedType] = {}
+
+        for key, inputs in inputs_by_key.items():
+            entry, inner = self._derivation(derivation, inputs)
+            derivations[key] = entry
+
+            if not isinstance(inner, Failure):
+                derived[key] = inner
+
+        return derivations, derived
+
+    def _progress(
+        self, path: EntryPath, finished: Union[AnalyticEntry, KeyedResult]
+    ) -> None:
         self._completed += 1
 
         if self._on_progress is not None:
             self._on_progress(
-                {"path": path, "entry": entry, "completed": self._completed}
+                {"path": path, "finished": finished, "completed": self._completed}
             )
 
     def _fail(self, error: Exception) -> None:
-        """Raises the error under OnFailure.Raise, and records it otherwise.
-
-        Args:
-            error (Exception): The exception an analytic or derivation raised or
-                handed back.
-        """
         if self._on_failure is OnFailure.Raise:
             raise error

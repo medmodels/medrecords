@@ -11,8 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Iterable, List, Optional, Tuple, Type, TypeVar, Union, overload
 
-from graphrecords import QueryError
-from graphrecords.types import Value
+from graphrecords import QueryError, Value
 
 ValueKindType = TypeVar("ValueKindType", str, int, float, bool, datetime, timedelta)
 

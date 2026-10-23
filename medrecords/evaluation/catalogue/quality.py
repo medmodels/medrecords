@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from medrecords.evaluation.analytic import Detail
 
 
-class AttributeRange(AttributeAnalytic[IndexType]):
+class AttributeRange(AttributeAnalytic[IndexType, Assessment]):
     """Checks that no value of an attribute lies outside a range."""
 
     _minimum: Value
@@ -101,7 +101,7 @@ class AttributeRange(AttributeAnalytic[IndexType]):
         return details
 
 
-class AttributeUniqueness(AttributeAnalytic[IndexType]):
+class AttributeUniqueness(AttributeAnalytic[IndexType, Assessment]):
     """Checks that no two elements share a value of an attribute."""
 
     def compute(self, medrecord: MedRecord) -> Assessment:
@@ -129,7 +129,7 @@ class AttributeUniqueness(AttributeAnalytic[IndexType]):
         return f"Elements sharing a value of {self._attribute}"
 
 
-class AttributeOrder(Analytic[MedRecord], Generic[IndexType]):
+class AttributeOrder(Analytic[MedRecord, Assessment], Generic[IndexType]):
     """Checks that one date attribute never lies before another."""
 
     _earlier: AttributeName
@@ -199,7 +199,7 @@ class AttributeOrder(Analytic[MedRecord], Generic[IndexType]):
         return {"earlier": self._earlier, "later": self._later}
 
 
-class UnlinkedNodes(Analytic[MedRecord]):
+class UnlinkedNodes(Analytic[MedRecord, Assessment]):
     """Checks that every selected node takes part in one of the selected edges."""
 
     _nodes: querying.NodesExpression

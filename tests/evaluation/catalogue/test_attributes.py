@@ -4,11 +4,12 @@ import unittest
 import pytest
 from graphrecords import edges, nodes
 
-from medrecords.evaluation.analytic import Assessment
+from medrecords.evaluation.analytic import Assessment, Counts, Histogram, Unit
 from medrecords.evaluation.catalogue.attributes import (
     AttributeCompleteness,
     AttributeCounts,
     AttributeDistribution,
+    AttributeHistogram,
     AttributeMax,
     AttributeMean,
     AttributeMedian,
@@ -127,33 +128,76 @@ class TestAttributeDistribution(unittest.TestCase):
         assert AttributeDistribution("amet", nodes()).title() == "Distribution of amet"
 
 
+class TestAttributeHistogram(unittest.TestCase):
+    def test_invalid_init(self) -> None:
+        with pytest.raises(ValueError, match="at least two edges"):
+            AttributeHistogram("amet", nodes(), [0.0])
+
+        with pytest.raises(ValueError, match="must be finite"):
+            AttributeHistogram("amet", nodes(), [0.0, math.inf])
+
+        with pytest.raises(ValueError, match="must be increasing"):
+            AttributeHistogram("amet", nodes(), [1.0, 0.0])
+
+    def test_compute(self) -> None:
+        histogram = AttributeHistogram("amet", CONSECTETUR, [0.0, 2.0, 4.0]).compute(
+            create_medrecord()
+        )
+
+        assert histogram.edges == [0.0, 2.0, 4.0]
+        assert histogram.counts == [1, 1]
+        assert histogram.below_count == 0
+        assert histogram.above_count == 1
+        assert histogram.statistics is not None
+        assert math.isclose(histogram.statistics["mean"], 3.0)
+        assert AttributeHistogram("missing", nodes(), [0.0, 1.0]).compute(
+            create_medrecord()
+        ) == Histogram([0.0, 1.0], [0])
+
+    def test_invalid_compute(self) -> None:
+        with pytest.raises(TypeError, match="expected float"):
+            AttributeHistogram("sit", CONSECTETUR, [0.0, 1.0]).compute(
+                create_medrecord()
+            )
+
+    def test_title(self) -> None:
+        assert AttributeHistogram("amet", nodes(), [0.0, 1.0]).title() == (
+            "Histogram of amet"
+        )
+
+    def test_parameters(self) -> None:
+        assert AttributeHistogram("amet", nodes(), [0.0, 1.0]).parameters() == {
+            "attribute": "amet",
+            "edges": [0.0, 1.0],
+        }
+
+
 class TestAttributeCounts(unittest.TestCase):
     def test_invalid_init(self) -> None:
         with pytest.raises(ValueError, match="limit of at least one, got 0"):
             AttributeCounts("sit", CONSECTETUR, 0)
 
     def test_compute(self) -> None:
-        table = AttributeCounts("sit", CONSECTETUR).compute(create_medrecord())
+        counts = AttributeCounts("sit", CONSECTETUR).compute(create_medrecord())
 
-        assert table.headings == ["value", "count", "share"]
-        assert sorted(table.rows, key=str) == [["dolor", 2, 0.5], ["elit", 2, 0.5]]
+        assert counts.by_value == {"dolor": 2, "elit": 2}
+        assert counts.total == 4
 
         ranked = AttributeCounts("amet", nodes()).compute(
             create_medrecord().add_nodes([("nona", {"amet": 5}), ("deca", {"amet": 5})])
         )
 
-        assert ranked.rows[0][0] == 5
-        assert [row[1] for row in ranked.rows] == [3, 1, 1, 1]
+        assert next(iter(ranked.by_value)) == 5
+        assert list(ranked.by_value.values()) == [3, 1, 1, 1]
 
         limited = AttributeCounts("amet", CONSECTETUR, 1).compute(create_medrecord())
 
-        assert len(limited.rows) == 1
-        assert limited.rows[0][1] == 1
-
-        share = limited.rows[0][2]
-
-        assert isinstance(share, float)
-        assert math.isclose(share, 1 / 3)
+        assert len(limited.by_value) == 1
+        assert list(limited.by_value.values()) == [1]
+        assert limited.total == 3
+        assert AttributeCounts("missing", nodes()).compute(create_medrecord()) == (
+            Counts({})
+        )
 
     def test_title(self) -> None:
         assert AttributeCounts("sit", nodes()).title() == "Values of sit"
@@ -211,9 +255,12 @@ class TestAttributeCompleteness(unittest.TestCase):
         assert isinstance(failed, Assessment)
         assert isinstance(passed.value, float)
         assert math.isclose(passed.value, 0.75)
-        assert passed.requirement_label == "at least 0.5"
+        assert passed.requirement_label == "at least 50.0%"
+        assert passed.unit is Unit.Share
         assert passed.passed
         assert not failed.passed
+        assert failed.requirement_label == "at least 80.0%"
+        assert failed.unit is Unit.Share
 
     def test_invalid_compute(self) -> None:
         with pytest.raises(ValueError, match="on no elements"):
