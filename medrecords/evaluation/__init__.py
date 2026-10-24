@@ -1,23 +1,26 @@
-from medrecords.evaluation._run import OnFailure, ProgressArgs, ProgressHandler
+from medrecords.evaluation._run import OnFailure, ProgressArguments, ProgressHandler
 from medrecords.evaluation.analytic import (
     Analytic,
     Assessment,
     Bin,
+    Counts,
     Derivation,
     DerivedType,
     Detail,
     Distribution,
     Figure,
+    Histogram,
     InputsType,
     Measurement,
     Plot,
     ReportValue,
+    ResultType,
+    Statistics,
     Table,
+    Unit,
 )
 from medrecords.evaluation.document import Company, Document
-from medrecords.evaluation.evaluation import Evaluation
-from medrecords.evaluation.group import EvaluationGroup
-from medrecords.evaluation.report import (
+from medrecords.evaluation.entry import (
     AnalyticEntry,
     DerivationEntry,
     Entry,
@@ -25,8 +28,25 @@ from medrecords.evaluation.report import (
     Failure,
     GroupEntry,
     InputEntry,
-    Report,
+    KeyedAnalyticEntry,
+    KeyedEntry,
+    KeyedGroupEntry,
+    KeyedResult,
 )
+from medrecords.evaluation.evaluation import Evaluation
+from medrecords.evaluation.findings import Findings
+from medrecords.evaluation.group import EvaluationGroup
+from medrecords.evaluation.placement import (
+    AnyGroupPlacement,
+    AtRoot,
+    GroupPlacement,
+    InGroup,
+    KeyedGroupPlacement,
+    NoResultError,
+    Placement,
+    ScopeType,
+)
+from medrecords.evaluation.report import Report
 from medrecords.evaluation.results import (
     ItemType,
     KeyType,
@@ -39,9 +59,12 @@ from medrecords.evaluation.results import (
 __all__ = [
     "Analytic",
     "AnalyticEntry",
+    "AnyGroupPlacement",
     "Assessment",
+    "AtRoot",
     "Bin",
     "Company",
+    "Counts",
     "Derivation",
     "DerivationEntry",
     "DerivedType",
@@ -54,19 +77,34 @@ __all__ = [
     "EvaluationGroup",
     "Failure",
     "Figure",
+    "Findings",
     "GroupEntry",
+    "GroupPlacement",
+    "Histogram",
+    "InGroup",
     "InputEntry",
     "InputsType",
     "ItemType",
     "KeyType",
+    "KeyedAnalyticEntry",
+    "KeyedEntry",
+    "KeyedGroupEntry",
+    "KeyedGroupPlacement",
+    "KeyedResult",
     "Measurement",
+    "NoResultError",
     "OnFailure",
+    "Placement",
     "Plot",
-    "ProgressArgs",
+    "ProgressArguments",
     "ProgressHandler",
     "Report",
     "ReportValue",
+    "ResultType",
+    "ScopeType",
+    "Statistics",
     "Table",
+    "Unit",
     "ValueKindType",
     "read",
     "read_each",

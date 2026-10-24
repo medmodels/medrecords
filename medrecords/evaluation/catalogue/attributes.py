@@ -10,26 +10,41 @@ present and reaches every question asked about the values.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Generic, List, Mapping, Optional, TypeVar, Union
+from typing import (
+    TYPE_CHECKING,
+    Generic,
+    Mapping,
+    Optional,
+    Sequence,
+    TypeVar,
+    Union,
+)
+
+from graphrecords import Value
 
 from medrecords.evaluation.analytic import (
     Analytic,
     Assessment,
+    Counts,
     Distribution,
-    Table,
+    Histogram,
+    ResultType,
+    Unit,
 )
 from medrecords.evaluation.results import read, read_each, read_pairs
 from medrecords.medrecord import MedRecord
 
 if TYPE_CHECKING:
-    from graphrecords import AttributeName, QueryError, Value, querying
+    from graphrecords import AttributeName, QueryError, querying
 
     from medrecords.evaluation.analytic import Detail
 
 IndexType = TypeVar("IndexType", "querying.NodeIndex", "querying.EdgeIndex")
 
 
-class AttributeAnalytic(Analytic[MedRecord], Generic[IndexType]):
+class AttributeAnalytic(
+    Analytic[MedRecord, ResultType], Generic[IndexType, ResultType]
+):
     """Base class for analytics over one attribute of the elements they look at.
 
     A subclass reads the elements carrying the attribute through ``_carrying``
@@ -57,30 +72,12 @@ class AttributeAnalytic(Analytic[MedRecord], Generic[IndexType]):
     def _carrying(
         self, medrecord: MedRecord
     ) -> querying.ElementsSeries[IndexType, querying.Unordered]:
-        """Selects the elements that carry the attribute.
-
-        Args:
-            medrecord (MedRecord): The MedRecord to query.
-
-        Returns:
-            querying.ElementsSeries[IndexType, querying.Unordered]: The elements,
-                bound to the MedRecord.
-        """
         series = medrecord.query(self._elements)
         return series.filter(series.has_attribute(self._attribute))
 
     def _values(
         self, medrecord: MedRecord
     ) -> querying.BareValuesSeries[querying.Unordered]:
-        """Reads the values of the attribute.
-
-        Args:
-            medrecord (MedRecord): The MedRecord to query.
-
-        Returns:
-            querying.BareValuesSeries[querying.Unordered]: One value per element
-                carrying the attribute.
-        """
         carrying = self._carrying(medrecord)
         return carrying.attribute(self._attribute).discard_index()
 
@@ -93,7 +90,7 @@ class AttributeAnalytic(Analytic[MedRecord], Generic[IndexType]):
         return {"attribute": self._attribute}
 
 
-class AttributeMean(AttributeAnalytic[IndexType]):
+class AttributeMean(AttributeAnalytic[IndexType, Value]):
     """The mean of an attribute."""
 
     def compute(self, medrecord: MedRecord) -> Union[Value, QueryError]:
@@ -116,7 +113,7 @@ class AttributeMean(AttributeAnalytic[IndexType]):
         return f"Mean {self._attribute}"
 
 
-class AttributeMedian(AttributeAnalytic[IndexType]):
+class AttributeMedian(AttributeAnalytic[IndexType, Value]):
     """The median of an attribute."""
 
     def compute(self, medrecord: MedRecord) -> Union[Value, QueryError]:
@@ -139,7 +136,7 @@ class AttributeMedian(AttributeAnalytic[IndexType]):
         return f"Median {self._attribute}"
 
 
-class AttributeStd(AttributeAnalytic[IndexType]):
+class AttributeStd(AttributeAnalytic[IndexType, Value]):
     """The sample standard deviation of an attribute, as the query engine has it."""
 
     def compute(self, medrecord: MedRecord) -> Union[Value, QueryError]:
@@ -163,7 +160,7 @@ class AttributeStd(AttributeAnalytic[IndexType]):
         return f"Standard deviation of {self._attribute}"
 
 
-class AttributeMin(AttributeAnalytic[IndexType]):
+class AttributeMin(AttributeAnalytic[IndexType, Value]):
     """The smallest value of an attribute."""
 
     def compute(self, medrecord: MedRecord) -> Union[Value, QueryError]:
@@ -186,7 +183,7 @@ class AttributeMin(AttributeAnalytic[IndexType]):
         return f"Smallest {self._attribute}"
 
 
-class AttributeMax(AttributeAnalytic[IndexType]):
+class AttributeMax(AttributeAnalytic[IndexType, Value]):
     """The largest value of an attribute."""
 
     def compute(self, medrecord: MedRecord) -> Union[Value, QueryError]:
@@ -209,7 +206,7 @@ class AttributeMax(AttributeAnalytic[IndexType]):
         return f"Largest {self._attribute}"
 
 
-class AttributeSum(AttributeAnalytic[IndexType]):
+class AttributeSum(AttributeAnalytic[IndexType, Value]):
     """The sum of an attribute."""
 
     def compute(self, medrecord: MedRecord) -> Union[Value, QueryError]:
@@ -232,7 +229,7 @@ class AttributeSum(AttributeAnalytic[IndexType]):
         return f"Sum of {self._attribute}"
 
 
-class AttributeDistribution(AttributeAnalytic[IndexType]):
+class AttributeDistribution(AttributeAnalytic[IndexType, Distribution]):
     """The distribution of a numeric attribute."""
 
     def compute(self, medrecord: MedRecord) -> Distribution:
@@ -255,7 +252,64 @@ class AttributeDistribution(AttributeAnalytic[IndexType]):
         return f"Distribution of {self._attribute}"
 
 
-class AttributeCounts(AttributeAnalytic[IndexType]):
+class AttributeHistogram(AttributeAnalytic[IndexType, Histogram]):
+    """The histogram of a numeric attribute over fixed bin edges.
+
+    The edges are fixed before the run, so the histograms of several MedRecords
+    can be drawn on one axis.
+    """
+
+    _edges: Sequence[float]
+
+    def __init__(
+        self,
+        attribute: AttributeName,
+        elements: querying.ElementsExpression[IndexType, querying.Unordered],
+        edges: Sequence[float],
+    ) -> None:
+        """Initializes a histogram of attribute values.
+
+        Args:
+            attribute (AttributeName): The attribute to count.
+            elements (querying.ElementsExpression[IndexType, querying.Unordered]):
+                The nodes or edges to look at.
+            edges (Sequence[float]): The bin edges, at least two, increasing.
+        """
+        super().__init__(attribute, elements)
+        self._edges = Histogram._checked_edges(edges)
+
+    def compute(self, medrecord: MedRecord) -> Histogram:
+        """Counts every value into the bins.
+
+        Args:
+            medrecord (MedRecord): The MedRecord to look at.
+
+        Returns:
+            Histogram: The counts per bin, the counts outside the edges, and the
+                statistics of the values.
+        """
+        return Histogram.from_values(
+            read_each(self._values(medrecord).evaluate(), float), self._edges
+        )
+
+    def title(self) -> Optional[str]:
+        """Names the analytic.
+
+        Returns:
+            Optional[str]: The heading.
+        """
+        return f"Histogram of {self._attribute}"
+
+    def parameters(self) -> Mapping[str, Detail]:
+        """Records the attribute and the edges.
+
+        Returns:
+            Mapping[str, Detail]: The details.
+        """
+        return {**super().parameters(), "edges": list(self._edges)}
+
+
+class AttributeCounts(AttributeAnalytic[IndexType, Counts]):
     """How often every value of an attribute occurs, most frequent first.
 
     Values that occur equally often come back in the reverse of the order the
@@ -291,15 +345,15 @@ class AttributeCounts(AttributeAnalytic[IndexType]):
 
         self._limit = limit
 
-    def compute(self, medrecord: MedRecord) -> Table:
+    def compute(self, medrecord: MedRecord) -> Counts:
         """Counts the values.
 
         Args:
             medrecord (MedRecord): The MedRecord to look at.
 
         Returns:
-            Table: One row per value with its count and its share of all
-                elements carrying the attribute.
+            Counts: How often every listed value occurs, with the number of
+                elements carrying the attribute as the total.
         """
         carrying = self._carrying(medrecord)
         counts = carrying.group_by(carrying.attribute(self._attribute)).count()
@@ -309,12 +363,7 @@ class AttributeCounts(AttributeAnalytic[IndexType]):
         if self._limit is not None:
             ranked = ranked.take(self._limit)
 
-        rows: List[List[Value]] = [
-            [value, count, count / total]
-            for value, count in read_pairs(ranked.evaluate(), int)
-        ]
-
-        return Table(["value", "count", "share"], rows)
+        return Counts(dict(read_pairs(ranked.evaluate(), int)), total)
 
     def title(self) -> Optional[str]:
         """Names the analytic.
@@ -344,7 +393,7 @@ class AttributeCounts(AttributeAnalytic[IndexType]):
         return {**super().parameters(), "limit": self._limit}
 
 
-class AttributeUniqueValues(AttributeAnalytic[IndexType]):
+class AttributeUniqueValues(AttributeAnalytic[IndexType, int]):
     """How many different values an attribute takes."""
 
     def compute(self, medrecord: MedRecord) -> int:
@@ -367,7 +416,7 @@ class AttributeUniqueValues(AttributeAnalytic[IndexType]):
         return f"Different values of {self._attribute}"
 
 
-class AttributeCompleteness(AttributeAnalytic[IndexType]):
+class AttributeCompleteness(AttributeAnalytic[IndexType, Union[float, Assessment]]):
     """The share of elements that carry an attribute, checked against a minimum."""
 
     _minimum: Optional[float]
@@ -425,7 +474,10 @@ class AttributeCompleteness(AttributeAnalytic[IndexType]):
             return share
 
         return Assessment(
-            share, f"at least {self._minimum}", passed=share >= self._minimum
+            share,
+            f"at least {self._minimum:.1%}",
+            passed=share >= self._minimum,
+            unit=Unit.Share,
         )
 
     def title(self) -> Optional[str]:

@@ -100,21 +100,19 @@ medrecord.nodes().filter(mr.nodes().in_group("Patient")).attribute("age").mean()
 
 ## Evaluations
 
-An analytic is a class with one `compute` that returns one value. Analytics go into groups, groups into an evaluation:
+An analytic is a class with one `compute` method that returns one value. Analytics are placed in groups, and groups in an evaluation:
 
 ```python
-from typing import Union
-
 from medrecords.evaluation import Analytic, Evaluation, EvaluationGroup, read
 from medrecords.evaluation.catalogue import AttributeCounts, AttributeMean, ElementCount
 
 PATIENTS = mr.nodes().filter(mr.nodes().in_group("Patient"))
 
 
-class OldestPatient(Analytic[mr.MedRecord]):
+class OldestPatient(Analytic[mr.MedRecord, int]):
     """The age of the oldest patient."""
 
-    def compute(self, medrecord: mr.MedRecord) -> Union[mr.Value, mr.QueryError]:
+    def compute(self, medrecord: mr.MedRecord) -> int:
         return read(medrecord.query(PATIENTS).attribute("age").max().evaluate(), int)
 
 
@@ -131,7 +129,7 @@ evaluation = (
 )
 ```
 
-The report is read by name:
+The second type argument of `Analytic` is the type of the value `compute` returns. The report is read by name:
 
 ```python
 report = evaluation.report(medrecord)

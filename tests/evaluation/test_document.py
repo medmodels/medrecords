@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from importlib.metadata import version
 from importlib.resources import files
 from pathlib import Path
 from typing import Dict, List, Optional, TypedDict, Union
@@ -13,29 +14,37 @@ from unittest.mock import patch
 import pytest
 import typst
 
+from medrecords.evaluation._json import Json
 from medrecords.evaluation.analytic import (
     Assessment,
+    Counts,
     Distribution,
+    Histogram,
     Measurement,
     Plot,
     ReportValue,
     Table,
+    Unit,
 )
 from medrecords.evaluation.document import _DEFAULT_COMPANY, Company, Document
-from medrecords.evaluation.report import (
+from medrecords.evaluation.entry import (
     AnalyticEntry,
     DerivationEntry,
     Failure,
     GroupEntry,
     InputEntry,
-    Report,
-    _Json,
+    KeyedAnalyticEntry,
+    KeyedGroupEntry,
+    KeyedResult,
 )
+from medrecords.evaluation.report import Report
 
 SVG = (
     '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">'
     '<rect width="10" height="10" fill="black"/></svg>'
 )
+
+EDGES = [10.0, 20.0, 30.0, 40.0, 50.0]
 
 
 class TypstCall(TypedDict):
@@ -45,7 +54,7 @@ class TypstCall(TypedDict):
     font_paths: List[Path]
     ignore_system_fonts: bool
     inputs: Dict[str, str]
-    options: Dict[str, _Json]
+    options: Dict[str, Json]
 
 
 class RecordingTypst:
@@ -81,6 +90,115 @@ def create_entry(name: str, result: Union[ReportValue, Failure]) -> AnalyticEntr
     )
 
 
+def create_keyed(
+    name: str,
+    *results: Union[ReportValue, Failure],
+) -> KeyedAnalyticEntry:
+    return KeyedAnalyticEntry(
+        name,
+        name.capitalize(),
+        None,
+        {},
+        [
+            KeyedResult(key, timedelta(seconds=0.25), result)
+            for key, result in zip(("real", "synthetic", 2024), results, strict=False)
+        ],
+    )
+
+
+def create_codes(start: int, total: int) -> Counts:
+    return Counts(
+        {f"C{code:02d}": 100 - code for code in range(start, start + 20)}, total
+    )
+
+
+def create_across() -> GroupEntry:
+    return GroupEntry(
+        "across",
+        "Cohort",
+        "sit amet",
+        [InputEntry("real", 3, 2), InputEntry("synthetic", 2, 1)],
+        DerivationEntry({}, {}, timedelta(seconds=1), None),
+        [
+            create_keyed("count", 3, 2),
+            create_keyed(
+                "histograms",
+                Histogram.from_values([5.0, 12.0, 33.0, 34.0, 45.0, 51.0], EDGES),
+                Histogram.from_values([22.0, 28.0, 35.0, 44.0], EDGES),
+                Histogram(EDGES, [0, 0, 0, 0]),
+            ),
+            create_keyed(
+                "differing",
+                Histogram.from_values([12.0], EDGES),
+                Histogram.from_values([1.0, 2.5], [0.0, 1.0, 2.0, 3.0]),
+            ),
+            create_keyed(
+                "half_broken",
+                Histogram.from_values([12.0], EDGES),
+                Failure("builtins.ValueError", "sit", ""),
+            ),
+            create_keyed(
+                "sexes",
+                Counts({"F": 162, "M": 137, None: 1}),
+                Counts({"M": 140, "F": 150}),
+            ),
+            create_keyed("codes", create_codes(0, 2500), create_codes(5, 2300)),
+            create_keyed(
+                "listed",
+                Counts({"I10": 50, "E78": 40}, 300),
+                Counts({"I10": 20}, 100),
+                Counts({}),
+            ),
+            create_keyed("unlisted", Counts({}), Counts({}, 3)),
+            create_keyed("nothing", Counts({}), Counts({})),
+            create_keyed("share", Measurement(0.5, lower=0.2, upper=0.8), 0.5),
+            create_keyed(
+                "percent",
+                Measurement(0.5, lower=0.2, upper=0.8, unit=Unit.Share),
+                Measurement(0.1, unit=Unit.Points),
+            ),
+            create_keyed(
+                "check",
+                Assessment(3, "at least 3", passed=True),
+                Assessment(2, "at least 3", passed=False),
+            ),
+            create_keyed(
+                "complete",
+                Assessment(0.75, "at least 50.0%", passed=True, unit=Unit.Share),
+                Assessment(0.25, "at least 50.0%", passed=False, unit=Unit.Share),
+            ),
+            create_keyed("broken", 3, Failure("builtins.ValueError", "sit", "")),
+            create_keyed(
+                "ages", Distribution([34.0, 41.0, 45.0]), Distribution([30.0, 80.0])
+            ),
+            create_keyed("same", Distribution([7.5]), Distribution([7.5, 7.5])),
+            create_keyed("tables", Table(["a"], [[1], [2]]), Table(["a"], [[3]])),
+            create_keyed("mixed", Table(["a"], [[1]]), Table(["b"], [[2]])),
+            create_keyed("pictures", Plot(SVG), Plot(SVG)),
+            create_keyed("empty", Table([], []), Table([], [])),
+            create_keyed("years", 1, 2, 3),
+            KeyedAnalyticEntry("none", "None", None, {}, []),
+            KeyedGroupEntry(
+                "older",
+                "older",
+                "dolor",
+                [InputEntry("real", 1, 0)],
+                {
+                    "real": DerivationEntry(
+                        {"seed": 7}, {"kept": 1}, timedelta(seconds=1), None
+                    ),
+                    "synthetic": DerivationEntry(
+                        {}, {}, timedelta(), Failure("E", "m", "")
+                    ),
+                    2024: DerivationEntry({}, {}, timedelta(), None),
+                },
+                [create_keyed("count", 1)],
+            ),
+            KeyedGroupEntry("by_sex", "by_sex", None, [], {}, []),
+        ],
+    )
+
+
 def create_report() -> Report:
     truth = True
 
@@ -99,6 +217,14 @@ def create_report() -> Report:
             create_entry("upper_only", Measurement(1.0, upper=1.5)),
             create_entry("passed", Assessment(5, "at least 5", passed=True)),
             create_entry("failed", Assessment(3, "at least 5", passed=False)),
+            create_entry(
+                "share", Measurement(0.87, lower=0.82, upper=0.91, unit=Unit.Share)
+            ),
+            create_entry("points", Measurement(0.05, unit=Unit.Points)),
+            create_entry(
+                "complete",
+                Assessment(0.75, "at least 50.0%", passed=True, unit=Unit.Share),
+            ),
             create_entry("failure", Failure("builtins.ValueError", "sit", "")),
             create_entry("tiny", Measurement(0.5, p_value=1e-30)),
             create_entry("huge", 1e300),
@@ -107,6 +233,26 @@ def create_report() -> Report:
             create_entry("undefined", math.nan),
             create_entry("wide", Distribution([0.0, 2000000.0, 3000000.0])),
             create_entry("same", Distribution([7.5, 7.5])),
+            create_entry(
+                "histogram",
+                Histogram.from_values([5.0, 12.0, 33.0, 34.0, 45.0, 51.0], EDGES),
+            ),
+            create_entry(
+                "one_bin", Histogram([0.0, 1.0], [3], below_count=1, above_count=2)
+            ),
+            create_entry(
+                "many_bins",
+                Histogram.from_values(
+                    [float(value) for value in range(1000)],
+                    [float(edge) for edge in range(0, 1001, 10)],
+                ),
+            ),
+            create_entry("empty_histogram", Histogram(EDGES, [0, 0, 0, 0])),
+            create_entry("counts", Counts({"F": 162, "M": 137, None: 1})),
+            create_entry("many_counts", create_codes(0, 2500)),
+            create_entry("listed", Counts({"I10": 50, "E78": 40}, 300)),
+            create_entry("empty_counts", Counts({})),
+            create_entry("unlisted", Counts({}, 4)),
             GroupEntry(
                 "amet",
                 "amet",
@@ -123,6 +269,14 @@ def create_report() -> Report:
                     create_entry(
                         "long",
                         Table(["a"], [[row] for row in range(20)]),
+                    ),
+                    create_entry(
+                        "shares",
+                        Table(
+                            ["value", "count", "share"],
+                            [["F", 3, 0.75], ["M", 1, 0.25], [None, 0, None]],
+                            units={"share": Unit.Share},
+                        ),
                     ),
                     create_entry("plot", Plot(SVG)),
                     create_entry("distribution", Distribution([4, 1, 3, 2, 10])),
@@ -153,6 +307,7 @@ def create_report() -> Report:
                 [],
             ),
             GroupEntry("vacant", "Vacant", "consectetur", [], None, []),
+            create_across(),
             create_entry("empty_table", Table([], [])),
             create_entry("truth", truth),
             create_entry("ratio", 1.5),
@@ -205,7 +360,10 @@ class TestDocument(unittest.TestCase):
             "kind": "Evaluation report",
             "run_details": True,
             "section_breaks": True,
+            "parameter_lines": True,
+            "failure_details": True,
             "company": _DEFAULT_COMPANY,
+            "version": version("medrecords"),
         }
 
         company = create_company()
@@ -218,6 +376,8 @@ class TestDocument(unittest.TestCase):
                 kind="Release check",
                 run_details=False,
                 section_breaks=False,
+                parameter_lines=False,
+                failure_details=False,
             )
         )
         company["name"] = "sit"
@@ -230,7 +390,10 @@ class TestDocument(unittest.TestCase):
             "kind": "Release check",
             "run_details": False,
             "section_breaks": False,
+            "parameter_lines": False,
+            "failure_details": False,
             "company": create_company(),
+            "version": version("medrecords"),
         }
 
         with tempfile.TemporaryDirectory() as directory:
@@ -259,6 +422,8 @@ class TestDocument(unittest.TestCase):
                 kind="Release check",
                 run_details=False,
                 section_breaks=False,
+                parameter_lines=False,
+                failure_details=False,
             ).to_pdf(path)
             configured = path.read_bytes()
 
@@ -300,6 +465,9 @@ class TestDocument(unittest.TestCase):
             (1, "failed_group"),
             (1, "failed_derivation"),
             (1, "Vacant"),
+            (1, "Cohort"),
+            (2, "older"),
+            (2, "by_sex"),
             (1, "Run details"),
         ]
 

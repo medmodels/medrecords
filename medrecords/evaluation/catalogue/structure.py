@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from medrecords.evaluation.analytic import Detail
 
 
-class ElementCount(Analytic[MedRecord], Generic[IndexType]):
+class ElementCount(Analytic[MedRecord, int], Generic[IndexType]):
     """How many nodes or edges a selection holds."""
 
     _elements: querying.ElementsExpression[IndexType, querying.Unordered]
@@ -45,7 +45,7 @@ class ElementCount(Analytic[MedRecord], Generic[IndexType]):
         return read(medrecord.query(self._elements).count().evaluate(), int)
 
 
-class GroupSizes(Analytic[MedRecord]):
+class GroupSizes(Analytic[MedRecord, Table]):
     """How many nodes and edges every group holds."""
 
     def compute(self, medrecord: MedRecord) -> Table:
@@ -77,7 +77,7 @@ class GroupSizes(Analytic[MedRecord]):
         return "Group sizes"
 
 
-class EdgesPerNode(Analytic[MedRecord]):
+class EdgesPerNode(Analytic[MedRecord, Distribution]):
     """How many of the selected edges the selected nodes take part in."""
 
     _nodes: querying.NodesExpression

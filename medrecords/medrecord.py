@@ -16,15 +16,24 @@ if TYPE_CHECKING:
     import pandas as pd
     import polars as pl
     from graphrecords import (
+        AttributeName,
+        Attributes,
+        EdgeIndex,
+        EdgeSource,
         EdgeView,
+        GroupIndex,
+        GroupOverview,
         GroupView,
+        NodeIndex,
+        NodeSource,
         NodeView,
+        Overview,
+        PluginName,
         RecordBatch,
         Schema,
         Writer,
     )
     from graphrecords.graphrecord import Export
-    from graphrecords.overview import GroupOverview, Overview
     from graphrecords.querying import (
         C,
         EdgesSeries,
@@ -37,17 +46,9 @@ if TYPE_CHECKING:
         Unbound,
     )
     from graphrecords.types import (
-        AttributeName,
-        Attributes,
-        EdgeIndex,
-        EdgeSource,
-        GroupIndex,
         MultipleEdgeSelection,
         MultipleGroupSelection,
         MultipleNodeSelection,
-        NodeIndex,
-        NodeSource,
-        PluginName,
         SingleGroupSelection,
         SingleNodeSelection,
     )

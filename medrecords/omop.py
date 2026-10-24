@@ -26,6 +26,7 @@ from medrecords.plugin import Plugin
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from graphrecords import EdgeIndex, GroupIndex, NodeIndex
     from graphrecords.plugins import (
         AddEdgesToGroup,
         AddGroup,
@@ -36,7 +37,6 @@ if TYPE_CHECKING:
         RemoveEdgesFromGroup,
         RemoveNodesFromGroup,
     )
-    from graphrecords.types import EdgeIndex, GroupIndex, NodeIndex
 
     from medrecords.medrecord import MedRecord
 
