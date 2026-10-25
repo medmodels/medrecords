@@ -40,8 +40,8 @@ from medrecords.evaluation.placement import (
 if TYPE_CHECKING:
     from graphrecords import Value
 
-    from medrecords.evaluation.analytic import ReportValue
-    from medrecords.evaluation.entry import Entry, EntryPath
+    from medrecords.evaluation.analytic import EntryPath, ReportValue
+    from medrecords.evaluation.entry import Entry
     from medrecords.evaluation.group import EvaluationGroup
     from medrecords.evaluation.placement import _Step
 
@@ -68,12 +68,14 @@ class Findings(Generic[ScopeType]):
     _entries: Sequence[Entry]
     _owner: Optional[EvaluationGroup[Any]]
     _key: Union[Value, _Unkeyed]
+    _path: EntryPath
 
     def __init__(
         self,
         entries: Sequence[Entry],
         owner: Optional[EvaluationGroup[Any]],
         key: Union[Value, _Unkeyed],
+        path: EntryPath,
     ) -> None:
         """Initializes findings.
 
@@ -84,10 +86,13 @@ class Findings(Generic[ScopeType]):
                 the findings answer to, or None for a report.
             key (Union[Value, _Unkeyed]): The key the findings are read under,
                 or unkeyed.
+            path (EntryPath): The names from the report root to the group the
+                findings belong to; empty for the root.
         """
         self._entries = entries
         self._owner = owner
         self._key = key
+        self._path = path
 
     def __getitem__(self, placement: Placement[ScopeType, ValueType]) -> ValueType:
         """Reads what a placement refers to.
@@ -111,12 +116,62 @@ class Findings(Generic[ScopeType]):
 
         return cast("ValueType", self._nested(keyed_values))
 
+    def path(self, placement: Placement[ScopeType, object], *keys: Value) -> EntryPath:
+        """Names the entry a placement refers to by its path from the report root.
+
+        Every group on the way that holds one group per key takes the next of
+        the keys, outermost first. A group placed across keys holds no entry
+        per key, so its keys are not part of a path.
+
+        Args:
+            placement (Placement[ScopeType, object]): The placement, made in or
+                converted to the findings' group.
+            *keys (Value): One key for every group on the way that holds one
+                group per key.
+
+        Returns:
+            EntryPath: The names of the groups on the way and of the entry.
+
+        Raises:
+            NoResultError: If the placement was not made in this group.
+            ValueError: If the keys are not one per group on the way that holds
+                one group per key.
+        """
+        if self._owner is not None and not self._owner._owns(placement._steps):
+            msg = f"{placement!r} was not placed in this group"
+            raise NoResultError(msg)
+
+        remaining = list(keys)
+        entries = self._entries
+        here: EntryPath = ()
+
+        for step in placement._steps[:-1]:
+            entry = self._entry_named(entries, step._name, here)
+            here = (*here, step._name)
+            entries = self._children(entry, here)
+
+            if self._fans_out(step, entry):
+                if not remaining:
+                    msg = f"expected a key for {self._path_text(here)}"
+                    raise ValueError(msg)
+
+                key = remaining.pop(0)
+                child = self._entry_named(entries, key, here)
+                here = (*here, key)
+                entries = self._children(child, here)
+
+        if remaining:
+            msg = f"expected {len(keys) - len(remaining)} keys, got {len(keys)}"
+            raise ValueError(msg)
+
+        return (*self._path, *here, placement._steps[-1]._name)
+
     def each(
         self,
         kind: Type[KindType],
         within: Optional[AnyGroupPlacement[ScopeType]] = None,
     ) -> Iterator[Tuple[EntryPath, KindType]]:
-        """Yields every result of one kind, with the path it was found at.
+        """Yields every result of one kind, with its path from the report root.
 
         A result under a key has the key at the end of its path. Results are
         matched by class, so an integer is not a float and a failure is a
@@ -140,6 +195,8 @@ class Findings(Generic[ScopeType]):
     ) -> Iterator[Tuple[EntryPath, Failure]]:
         """Yields every failure, of an analytic, a conclusion or a derivation.
 
+        Paths lead from the report root.
+
         Args:
             within (Optional[AnyGroupPlacement[ScopeType]]): The group to scan,
                 or None for everything. Defaults to None.
@@ -161,23 +218,24 @@ class Findings(Generic[ScopeType]):
 
         Returns:
             List[Tuple[EntryPath, Sequence[Entry]]]: The entries of the group
-                at every place it was computed, with their paths.
+                at every place it was computed, with their paths from the
+                report root.
 
         Raises:
             NoResultError: If the group was not placed in this group.
         """
         if within is None:
-            return [((), self._entries)]
+            return [(self._path, self._entries)]
 
         if self._owner is not None and not self._owner._owns((within._step,)):
             msg = f"{within!r} was not placed in this group"
             raise NoResultError(msg)
 
         entry = self._entry_named(self._entries, within._step._name, ())
-        path: EntryPath = (within._step._name,)
+        path: EntryPath = (*self._path, within._step._name)
 
         if not self._fans_out(within._step, entry):
-            return [(path, self._children(entry, path))]
+            return [(path, self._children(entry, (within._step._name,)))]
 
         return [
             ((*path, child.name), child.entries)
@@ -192,7 +250,8 @@ class Findings(Generic[ScopeType]):
 
         Args:
             entries (Sequence[Entry]): The entries to walk.
-            path (EntryPath): The names from the findings down to the entries.
+            path (EntryPath): The names from the report root down to the
+                entries.
 
         Yields:
             Tuple[EntryPath, Union[ReportValue, Failure]]: The path and the
@@ -222,7 +281,8 @@ class Findings(Generic[ScopeType]):
 
         Args:
             entries (Sequence[Entry]): The entries to walk.
-            path (EntryPath): The names from the findings down to the entries.
+            path (EntryPath): The names from the report root down to the
+                entries.
 
         Yields:
             Tuple[EntryPath, Failure]: The path and the failure; a failure

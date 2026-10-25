@@ -27,6 +27,7 @@ from medrecords.evaluation.entry import (
     InputEntry,
     KeyedAnalyticEntry,
     KeyedGroupEntry,
+    Layout,
 )
 from medrecords.evaluation.findings import Findings
 from medrecords.evaluation.placement import (
@@ -44,8 +45,13 @@ if TYPE_CHECKING:
     from graphrecords import Value
 
     from medrecords.evaluation._run import Run
-    from medrecords.evaluation.analytic import Analytic, Derivation, ReportValue
-    from medrecords.evaluation.entry import Entry, EntryPath, KeyedEntry
+    from medrecords.evaluation.analytic import (
+        Analytic,
+        Derivation,
+        EntryPath,
+        ReportValue,
+    )
+    from medrecords.evaluation.entry import Entry, KeyedEntry
 
 EntryType = TypeVar("EntryType")
 
@@ -222,6 +228,7 @@ class _NestedGroupMember(_InputsMember[InputsType], Generic[InputsType, DerivedT
     _group: EvaluationGroup[DerivedType]
     _title: str
     _description: Optional[str]
+    _layout: Layout
 
     def __init__(
         self,
@@ -230,6 +237,7 @@ class _NestedGroupMember(_InputsMember[InputsType], Generic[InputsType, DerivedT
         group: EvaluationGroup[DerivedType],
         title: Optional[str],
         description: Optional[str],
+        layout: Layout,
     ) -> None:
         """Initializes a member holding a group.
 
@@ -240,11 +248,13 @@ class _NestedGroupMember(_InputsMember[InputsType], Generic[InputsType, DerivedT
             title (Optional[str]): The heading of the group, or None for the
                 name.
             description (Optional[str]): The text under the heading, if any.
+            layout (Layout): How a typeset report sets the group.
         """
         super().__init__(name, shape)
         self._group = group
         self._title = title or str(name)
         self._description = description or None
+        self._layout = layout
 
     def _owns(self, steps: Tuple[_Step, ...]) -> bool:
         return not steps or self._group._owns(steps)
@@ -259,6 +269,7 @@ class _NestedGroupMember(_InputsMember[InputsType], Generic[InputsType, DerivedT
             InputEntry._from_inputs(inputs),
             derivation,
             [],
+            layout=self._layout,
         )
 
 
@@ -271,6 +282,7 @@ class _GroupMember(_NestedGroupMember[InputsType, InputsType]):
         group: EvaluationGroup[InputsType],
         title: Optional[str],
         description: Optional[str],
+        layout: Layout,
     ) -> None:
         """Initializes a nested group member.
 
@@ -280,8 +292,9 @@ class _GroupMember(_NestedGroupMember[InputsType, InputsType]):
             title (Optional[str]): The heading of the group, or None for the
                 name.
             description (Optional[str]): The text under the heading, if any.
+            layout (Layout): How a typeset report sets the group.
         """
-        super().__init__(name, _Shape.Plain, group, title, description)
+        super().__init__(name, _Shape.Plain, group, title, description, layout)
 
     def _entry(self, run: Run, inputs: InputsType, path: EntryPath) -> GroupEntry:
         return self._group._filled(
@@ -298,6 +311,7 @@ class _GroupMember(_NestedGroupMember[InputsType, InputsType]):
             InputEntry._from_inputs(inputs_by_key),
             {},
             self._group._entries_across(run, inputs_by_key, (*path, self._step._name)),
+            layout=self._layout,
         )
 
 
@@ -313,6 +327,7 @@ class _GroupOverMember(_NestedGroupMember[InputsType, DerivedType]):
         group: EvaluationGroup[DerivedType],
         title: Optional[str],
         description: Optional[str],
+        layout: Layout,
     ) -> None:
         """Initializes a member holding a group over derived inputs.
 
@@ -324,8 +339,9 @@ class _GroupOverMember(_NestedGroupMember[InputsType, DerivedType]):
             title (Optional[str]): The heading of the group, or None for the
                 name.
             description (Optional[str]): The text under the heading, if any.
+            layout (Layout): How a typeset report sets the group.
         """
-        super().__init__(name, _Shape.Plain, group, title, description)
+        super().__init__(name, _Shape.Plain, group, title, description, layout)
         self._derivation = derivation
 
     def _entry(self, run: Run, inputs: InputsType, path: EntryPath) -> GroupEntry:
@@ -350,6 +366,7 @@ class _GroupOverMember(_NestedGroupMember[InputsType, DerivedType]):
             InputEntry._from_inputs(derived),
             derivations,
             self._group._entries_across(run, derived, (*path, self._step._name)),
+            layout=self._layout,
         )
 
 
@@ -358,7 +375,8 @@ class _KeyedGroupMember(_NestedGroupMember[InputsType, DerivedType]):
 
     Nested in another group placed across keys, every child key the
     derivations return gets one keyed group holding the group computed across
-    the keys that returned it, in the order the child keys were first seen.
+    the keys that returned it, in the order the child keys were first seen,
+    headed by the first title the derivation gives the child key.
     """
 
     _derivation: Derivation[InputsType, Mapping[Value, DerivedType]]
@@ -371,6 +389,7 @@ class _KeyedGroupMember(_NestedGroupMember[InputsType, DerivedType]):
         group: EvaluationGroup[DerivedType],
         title: Optional[str],
         description: Optional[str],
+        layout: Layout,
     ) -> None:
         """Initializes a member holding a group over derived inputs by key.
 
@@ -383,8 +402,9 @@ class _KeyedGroupMember(_NestedGroupMember[InputsType, DerivedType]):
             title (Optional[str]): The heading of the group, or None for the
                 name.
             description (Optional[str]): The text under the heading, if any.
+            layout (Layout): How a typeset report sets the group.
         """
-        super().__init__(name, shape, group, title, description)
+        super().__init__(name, shape, group, title, description, layout)
         self._derivation = derivation
 
     def _entry_across(
@@ -401,7 +421,9 @@ class _KeyedGroupMember(_NestedGroupMember[InputsType, DerivedType]):
         Returns:
             KeyedGroupEntry: The keyed entry holding one keyed group per child key.
         """
-        derivations, derived = run._derivations(self._derivation, inputs_by_key)
+        derivations, derived, titles = run._keyed_derivations(
+            self._derivation, inputs_by_key
+        )
         inputs_by_child_key: Dict[Value, Dict[Value, DerivedType]] = {}
 
         for key, derived_by_child_key in derived.items():
@@ -412,7 +434,7 @@ class _KeyedGroupMember(_NestedGroupMember[InputsType, DerivedType]):
         entries: List[KeyedEntry] = [
             KeyedGroupEntry(
                 child_key,
-                str(child_key),
+                titles.get(child_key, str(child_key)),
                 None,
                 InputEntry._from_inputs(inputs_of_child),
                 {},
@@ -430,6 +452,7 @@ class _KeyedGroupMember(_NestedGroupMember[InputsType, DerivedType]):
             InputEntry._from_inputs(inputs_by_key),
             derivations,
             entries,
+            layout=self._layout,
         )
 
 
@@ -443,6 +466,7 @@ class _GroupOverEachMember(_KeyedGroupMember[InputsType, DerivedType]):
         group: EvaluationGroup[DerivedType],
         title: Optional[str],
         description: Optional[str],
+        layout: Layout,
     ) -> None:
         """Initializes a member holding a group over each derived inputs.
 
@@ -454,11 +478,17 @@ class _GroupOverEachMember(_KeyedGroupMember[InputsType, DerivedType]):
             title (Optional[str]): The heading of the entries, or None for the
                 name.
             description (Optional[str]): The text under the heading, if any.
+            layout (Layout): How a typeset report sets the entries.
         """
-        super().__init__(name, _Shape.Each, derivation, group, title, description)
+        super().__init__(
+            name, _Shape.Each, derivation, group, title, description, layout
+        )
 
     def _entry(self, run: Run, inputs: InputsType, path: EntryPath) -> GroupEntry:
         """Derives the inputs, computes the group under every key, and reports it.
+
+        Every key's group is headed by the title the derivation gives the key,
+        or by the key itself.
 
         Args:
             run (Run): The run the group is computed on.
@@ -469,7 +499,7 @@ class _GroupOverEachMember(_KeyedGroupMember[InputsType, DerivedType]):
             GroupEntry: The entry holding one group per key, empty when the
                 derivation failed.
         """
-        derivation, derived = run._derivation(self._derivation, inputs)
+        derivation, derived, titles = run._keyed_derivation(self._derivation, inputs)
 
         if isinstance(derived, Failure):
             return self._unfilled(inputs, derivation)
@@ -481,7 +511,12 @@ class _GroupOverEachMember(_KeyedGroupMember[InputsType, DerivedType]):
                 inner,
                 (*child_path, key),
                 GroupEntry(
-                    key, str(key), None, InputEntry._from_inputs(inner), None, []
+                    key,
+                    titles.get(key, str(key)),
+                    None,
+                    InputEntry._from_inputs(inner),
+                    None,
+                    [],
                 ),
             )
             for key, inner in derived.items()
@@ -501,6 +536,7 @@ class _GroupAcrossMember(_KeyedGroupMember[InputsType, DerivedType]):
         group: EvaluationGroup[DerivedType],
         title: Optional[str],
         description: Optional[str],
+        layout: Layout,
     ) -> None:
         """Initializes a member holding a group across derived inputs.
 
@@ -512,8 +548,11 @@ class _GroupAcrossMember(_KeyedGroupMember[InputsType, DerivedType]):
             title (Optional[str]): The heading of the group, or None for the
                 name.
             description (Optional[str]): The text under the heading, if any.
+            layout (Layout): How a typeset report sets the group.
         """
-        super().__init__(name, _Shape.Across, derivation, group, title, description)
+        super().__init__(
+            name, _Shape.Across, derivation, group, title, description, layout
+        )
 
     def _entry(self, run: Run, inputs: InputsType, path: EntryPath) -> GroupEntry:
         derivation, derived = run._derivation(self._derivation, inputs)
@@ -607,6 +646,8 @@ class EvaluationGroup(Generic[InputsType]):
         group: EvaluationGroup[InputsType],
         title: Optional[str] = None,
         description: Optional[str] = None,
+        *,
+        layout: Layout = Layout.Section,
     ) -> EvaluationGroup[InputsType]:
         """Places a group over the same inputs.
 
@@ -617,11 +658,13 @@ class EvaluationGroup(Generic[InputsType]):
                 or None for the name. Defaults to None.
             description (Optional[str]): The text under the heading. Defaults to
                 None.
+            layout (Layout): How a typeset report sets the group. Defaults to
+                Layout.Section.
 
         Returns:
             EvaluationGroup[InputsType]: A group with the group as its last member.
         """
-        return self.place_group(name, group, title, description)[0]
+        return self.place_group(name, group, title, description, layout=layout)[0]
 
     def place_group(
         self,
@@ -629,6 +672,8 @@ class EvaluationGroup(Generic[InputsType]):
         group: EvaluationGroup[InputsType],
         title: Optional[str] = None,
         description: Optional[str] = None,
+        *,
+        layout: Layout = Layout.Section,
     ) -> Tuple[EvaluationGroup[InputsType], GroupPlacement[InGroup]]:
         """Places a group over the same inputs and hands back its placement.
 
@@ -639,13 +684,15 @@ class EvaluationGroup(Generic[InputsType]):
                 or None for the name. Defaults to None.
             description (Optional[str]): The text under the heading. Defaults to
                 None.
+            layout (Layout): How a typeset report sets the group. Defaults to
+                Layout.Section.
 
         Returns:
             Tuple[EvaluationGroup[InputsType], GroupPlacement[InGroup]]: A group
                 with the group as its last member, and the placement converting
                 the placements made inside the group.
         """
-        member = _GroupMember(name, group, title, description)
+        member = _GroupMember(name, group, title, description, layout)
 
         return self._with_member(member), GroupPlacement(member._step)
 
@@ -656,6 +703,8 @@ class EvaluationGroup(Generic[InputsType]):
         group: EvaluationGroup[DerivedType],
         title: Optional[str] = None,
         description: Optional[str] = None,
+        *,
+        layout: Layout = Layout.Section,
     ) -> EvaluationGroup[InputsType]:
         """Places a group over inputs a derivation computes once per run.
 
@@ -669,12 +718,16 @@ class EvaluationGroup(Generic[InputsType]):
                 or None for the name. Defaults to None.
             description (Optional[str]): The text under the heading. Defaults to
                 None.
+            layout (Layout): How a typeset report sets the group. Defaults to
+                Layout.Section.
 
         Returns:
             EvaluationGroup[InputsType]: A group with the nested group as
                 its last member.
         """
-        return self.place_group_over(name, derivation, group, title, description)[0]
+        return self.place_group_over(
+            name, derivation, group, title, description, layout=layout
+        )[0]
 
     def place_group_over(
         self,
@@ -683,6 +736,8 @@ class EvaluationGroup(Generic[InputsType]):
         group: EvaluationGroup[DerivedType],
         title: Optional[str] = None,
         description: Optional[str] = None,
+        *,
+        layout: Layout = Layout.Section,
     ) -> Tuple[EvaluationGroup[InputsType], GroupPlacement[InGroup]]:
         """Places a group over derived inputs and hands back its placement.
 
@@ -696,13 +751,15 @@ class EvaluationGroup(Generic[InputsType]):
                 or None for the name. Defaults to None.
             description (Optional[str]): The text under the heading. Defaults to
                 None.
+            layout (Layout): How a typeset report sets the group. Defaults to
+                Layout.Section.
 
         Returns:
             Tuple[EvaluationGroup[InputsType], GroupPlacement[InGroup]]: A group
                 with the nested group as its last member, and the placement
                 converting the placements made inside the group.
         """
-        member = _GroupOverMember(name, derivation, group, title, description)
+        member = _GroupOverMember(name, derivation, group, title, description, layout)
 
         return self._with_member(member), GroupPlacement(member._step)
 
@@ -713,6 +770,8 @@ class EvaluationGroup(Generic[InputsType]):
         group: EvaluationGroup[DerivedType],
         title: Optional[str] = None,
         description: Optional[str] = None,
+        *,
+        layout: Layout = Layout.Section,
     ) -> EvaluationGroup[InputsType]:
         """Places a group over each of the inputs a derivation computes.
 
@@ -726,13 +785,15 @@ class EvaluationGroup(Generic[InputsType]):
                 report, or None for the name. Defaults to None.
             description (Optional[str]): The text under the heading. Defaults to
                 None.
+            layout (Layout): How a typeset report sets the group. Defaults to
+                Layout.Section.
 
         Returns:
             EvaluationGroup[InputsType]: A group with the entries as its last member.
         """
-        return self.place_group_over_each(name, derivation, group, title, description)[
-            0
-        ]
+        return self.place_group_over_each(
+            name, derivation, group, title, description, layout=layout
+        )[0]
 
     def place_group_over_each(
         self,
@@ -741,6 +802,8 @@ class EvaluationGroup(Generic[InputsType]):
         group: EvaluationGroup[DerivedType],
         title: Optional[str] = None,
         description: Optional[str] = None,
+        *,
+        layout: Layout = Layout.Section,
     ) -> Tuple[EvaluationGroup[InputsType], KeyedGroupPlacement[InGroup]]:
         """Places a group over each derived inputs and hands back its placement.
 
@@ -754,6 +817,8 @@ class EvaluationGroup(Generic[InputsType]):
                 report, or None for the name. Defaults to None.
             description (Optional[str]): The text under the heading. Defaults to
                 None.
+            layout (Layout): How a typeset report sets the group. Defaults to
+                Layout.Section.
 
         Returns:
             Tuple[EvaluationGroup[InputsType], KeyedGroupPlacement[InGroup]]: A
@@ -761,7 +826,9 @@ class EvaluationGroup(Generic[InputsType]):
                 converting the placements made inside the group to one value
                 per key.
         """
-        member = _GroupOverEachMember(name, derivation, group, title, description)
+        member = _GroupOverEachMember(
+            name, derivation, group, title, description, layout
+        )
 
         return self._with_member(member), KeyedGroupPlacement(member._step)
 
@@ -772,6 +839,8 @@ class EvaluationGroup(Generic[InputsType]):
         group: EvaluationGroup[DerivedType],
         title: Optional[str] = None,
         description: Optional[str] = None,
+        *,
+        layout: Layout = Layout.Section,
     ) -> EvaluationGroup[InputsType]:
         """Places a group across the inputs a derivation computes, by key.
 
@@ -790,12 +859,16 @@ class EvaluationGroup(Generic[InputsType]):
                 or None for the name. Defaults to None.
             description (Optional[str]): The text under the heading. Defaults to
                 None.
+            layout (Layout): How a typeset report sets the group. Defaults to
+                Layout.Section.
 
         Returns:
             EvaluationGroup[InputsType]: A group with the nested group as its last
                 member.
         """
-        return self.place_group_across(name, derivation, group, title, description)[0]
+        return self.place_group_across(
+            name, derivation, group, title, description, layout=layout
+        )[0]
 
     def place_group_across(
         self,
@@ -804,6 +877,8 @@ class EvaluationGroup(Generic[InputsType]):
         group: EvaluationGroup[DerivedType],
         title: Optional[str] = None,
         description: Optional[str] = None,
+        *,
+        layout: Layout = Layout.Section,
     ) -> Tuple[EvaluationGroup[InputsType], KeyedGroupPlacement[InGroup]]:
         """Places a group across derived inputs and hands back its placement.
 
@@ -817,6 +892,8 @@ class EvaluationGroup(Generic[InputsType]):
                 or None for the name. Defaults to None.
             description (Optional[str]): The text under the heading. Defaults to
                 None.
+            layout (Layout): How a typeset report sets the group. Defaults to
+                Layout.Section.
 
         Returns:
             Tuple[EvaluationGroup[InputsType], KeyedGroupPlacement[InGroup]]: A
@@ -824,7 +901,7 @@ class EvaluationGroup(Generic[InputsType]):
                 placement converting the placements made inside the group to
                 one value per key.
         """
-        member = _GroupAcrossMember(name, derivation, group, title, description)
+        member = _GroupAcrossMember(name, derivation, group, title, description, layout)
 
         return self._with_member(member), KeyedGroupPlacement(member._step)
 
@@ -930,7 +1007,7 @@ class EvaluationGroup(Generic[InputsType]):
 
         for member in self._members:
             if isinstance(member, _ConclusionMember):
-                findings = Findings(self._ordered(computed), self, _UNKEYED)
+                findings = Findings(self._ordered(computed), self, _UNKEYED, path)
                 computed[member._step] = member._conclude(run, path, findings)
 
         return entry._with_entries(self._ordered(computed))
@@ -962,7 +1039,7 @@ class EvaluationGroup(Generic[InputsType]):
         for member in self._members:
             if isinstance(member, _ConclusionMember):
                 findings_by_key = {
-                    key: Findings(self._ordered(computed), self, key)
+                    key: Findings(self._ordered(computed), self, key, path)
                     for key in inputs_by_key
                 }
                 computed[member._step] = member._conclude_across(

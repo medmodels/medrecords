@@ -2,6 +2,7 @@ import unittest
 
 from graphrecords import EdgeEndpointRole, edges, nodes
 
+from medrecords.evaluation.analytic import Bins
 from medrecords.evaluation.catalogue.structure import (
     EdgesPerNode,
     ElementCount,
@@ -48,6 +49,13 @@ class TestGroupSizes(unittest.TestCase):
 
 
 class TestEdgesPerNode(unittest.TestCase):
+    def test_init(self) -> None:
+        counts = EdgesPerNode(
+            SIT, ELIT, EdgeEndpointRole.Source, bins=Bins(count=2)
+        ).compute(create_medrecord())
+
+        assert counts.bins == Bins(count=2)
+
     def test_compute(self) -> None:
         sources = EdgesPerNode(SIT, ELIT, EdgeEndpointRole.Source).compute(
             create_medrecord()
@@ -58,11 +66,12 @@ class TestEdgesPerNode(unittest.TestCase):
 
         assert sorted(sources.values) == [0.0, 0.0, 2.0]
         assert sorted(targets.values) == [0.0, 1.0, 1.0]
+        assert sources.bins is None
 
     def test_description(self) -> None:
         assert (
             EdgesPerNode(SIT, ELIT, EdgeEndpointRole.Source).description()
-            == "Nodes without any edge count as zero."
+            == "Those with none are counted as zero."
         )
 
     def test_parameters(self) -> None:

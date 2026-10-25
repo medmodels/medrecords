@@ -13,3 +13,4 @@ docs/api/_autosummary/*
 coverage.xml
 coverage/*
 data
+medrecords/evaluation/template/packages

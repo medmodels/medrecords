@@ -25,17 +25,14 @@ classifiers = [
     'Topic :: Software Development',
     'Typing :: Typed',
 ]
-dependencies = ["graphrecords>=0.7.0", "polars>=1.6.0"]
-
-[project.optional-dependencies]
-pdf = ["typst>=0.15.0"]
+dependencies = ["graphrecords>=0.8.0", "polars>=1.6.0", "typst>=0.15.0"]
 
 [project.urls]
 Repository = "https://github.com/medmodels/medrecords"
 Documentation = "https://www.medmodels.de/docs/medrecords/latest/index.html"
 
 [dependency-groups]
-tests = ["pytest>=8.2.2", "coverage[toml]>=7.6.1", "typst>=0.15.0"]
+tests = ["pytest>=8.2.2", "coverage[toml]>=7.6.1"]
 docs = [
     "sphinx>=7",
     "sphinx-copybutton",
@@ -71,7 +68,7 @@ build-backend = "setuptools.build_meta"
 include = ["medrecords*"]
 
 [tool.setuptools.package-data]
-"medrecords.evaluation" = ["template/*"]
+"medrecords.evaluation" = ["template/*", "template/packages/**/*"]
 
 [tool.ruff]
 exclude = [

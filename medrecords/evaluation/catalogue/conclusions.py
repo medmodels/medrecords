@@ -12,10 +12,10 @@ from medrecords.evaluation.findings import Findings
 from medrecords.evaluation.placement import ScopeType
 
 if TYPE_CHECKING:
-    from medrecords.evaluation.analytic import Detail
+    from medrecords.evaluation.analytic import Cell
     from medrecords.evaluation.placement import Placement
 
-CellType = TypeVar("CellType", bound=Value)
+KeyedValueType = TypeVar("KeyedValueType", bound=Value)
 
 
 class ChecksRun(Analytic[Findings[ScopeType], int], Generic[ScopeType]):
@@ -75,19 +75,15 @@ class FailedChecks(Analytic[Findings[ScopeType], Table], Generic[ScopeType]):
 
         Returns:
             Table: One row per failed assessment: the path it was found at, its
-                value and the requirement it did not meet.
+                value and the condition it did not meet.
         """
-        rows: List[List[Value]] = [
-            [
-                " / ".join(str(name) for name in path),
-                check.value,
-                check.requirement_label,
-            ]
+        rows: List[List[Cell]] = [
+            [path, check.value, check.requirement_label]
             for path, check in findings.each(Assessment)
             if not check.passed
         ]
 
-        return Table(["check", "value", "requirement"], rows)
+        return Table(["check", "value", "required"], rows)
 
     def title(self) -> Optional[str]:
         """Names the conclusion.
@@ -118,7 +114,36 @@ class AnalyticsFailed(Analytic[Findings[ScopeType], int], Generic[ScopeType]):
         Returns:
             Optional[str]: The heading.
         """
-        return "Analytics failed"
+        return "Entries not computed"
+
+
+class FailedAnalytics(Analytic[Findings[ScopeType], Table], Generic[ScopeType]):
+    """Which computations failed: every failure with its exception type and message."""
+
+    def compute(self, findings: Findings[ScopeType]) -> Table:
+        """Lists the failures.
+
+        Args:
+            findings (Findings[ScopeType]): What the group found.
+
+        Returns:
+            Table: One row per failure: the path it was found at, the type of
+                the exception and its message.
+        """
+        rows: List[List[Cell]] = [
+            [path, failure.exception_type, failure.message]
+            for path, failure in findings.failures()
+        ]
+
+        return Table(["entry", "exception type", "message"], rows)
+
+    def title(self) -> Optional[str]:
+        """Names the conclusion.
+
+        Returns:
+            Optional[str]: The heading.
+        """
+        return "Entries not computed, with their errors"
 
 
 class Mean(Analytic[Findings[ScopeType], float], Generic[ScopeType]):
@@ -154,32 +179,62 @@ class Mean(Analytic[Findings[ScopeType], float], Generic[ScopeType]):
         """
         return "Mean"
 
-    def parameters(self) -> Mapping[str, Detail]:
-        """Records how many scores go into the mean.
+
+class KeyedMean(Analytic[Findings[ScopeType], float], Generic[ScopeType]):
+    """The mean of the scores one placement reported, one per key."""
+
+    _scores_by_key: Placement[ScopeType, Mapping[Value, float]]
+
+    def __init__(
+        self, scores_by_key: Placement[ScopeType, Mapping[Value, float]]
+    ) -> None:
+        """Initializes a keyed mean.
+
+        Args:
+            scores_by_key (Placement[ScopeType, Mapping[Value, float]]): The
+                placement reporting one score per key.
+        """
+        self._scores_by_key = scores_by_key
+
+    def compute(self, findings: Findings[ScopeType]) -> float:
+        """Averages the scores over the keys.
+
+        Args:
+            findings (Findings[ScopeType]): What the group found.
 
         Returns:
-            Mapping[str, Detail]: The number of scores.
+            float: The mean of the scores.
         """
-        return {"score_count": len(self._scores)}
+        return mean(findings[self._scores_by_key].values())
+
+    def title(self) -> Optional[str]:
+        """Names the conclusion.
+
+        Returns:
+            Optional[str]: The heading.
+        """
+        return "Mean"
 
 
-class KeyedTable(Analytic[Findings[ScopeType], Table], Generic[ScopeType, CellType]):
+class KeyedTable(
+    Analytic[Findings[ScopeType], Table], Generic[ScopeType, KeyedValueType]
+):
     """One values_by_key result as a table: one row per key."""
 
-    _values_by_key: Placement[ScopeType, Mapping[Value, CellType]]
+    _values_by_key: Placement[ScopeType, Mapping[Value, KeyedValueType]]
     _key_heading: Identifier
     _value_heading: Identifier
 
     def __init__(
         self,
-        values_by_key: Placement[ScopeType, Mapping[Value, CellType]],
+        values_by_key: Placement[ScopeType, Mapping[Value, KeyedValueType]],
         key_heading: Identifier,
         value_heading: Identifier,
     ) -> None:
         """Initializes a values_by_key table.
 
         Args:
-            values_by_key (Placement[ScopeType, Mapping[Value, CellType]]): The
+            values_by_key (Placement[ScopeType, Mapping[Value, KeyedValueType]]): The
                 placement reporting one value per key.
             key_heading (Identifier): The heading of the key column.
             value_heading (Identifier): The heading of the value column.

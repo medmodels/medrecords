@@ -10,7 +10,9 @@ from medrecords.evaluation.catalogue.conclusions import (
     AnalyticsFailed,
     ChecksFailed,
     ChecksRun,
+    FailedAnalytics,
     FailedChecks,
+    KeyedMean,
     KeyedTable,
     Mean,
 )
@@ -27,7 +29,9 @@ def create_medrecord() -> MedRecord:
 
 
 def create_report(group: EvaluationGroup[MedRecord]) -> Report:
-    return Run(OnFailure.Record, None).report("amet", None, group, create_medrecord())
+    return Run(OnFailure.Record, None).report(
+        "amet", None, {}, group, create_medrecord()
+    )
 
 
 class NodeCount(Analytic[MedRecord, int]):
@@ -41,6 +45,11 @@ class Score(Analytic[MedRecord, float]):
 
     def compute(self, medrecord: MedRecord) -> float:
         return self._score
+
+
+class NodeScore(Analytic[MedRecord, float]):
+    def compute(self, medrecord: MedRecord) -> float:
+        return 0.5 if medrecord.contains_node("lorem") else 1.0
 
 
 class AtLeast(Analytic[MedRecord, Assessment]):
@@ -107,11 +116,11 @@ class TestFailedChecks(unittest.TestCase):
         report = create_report(create_group().add_conclusion("failed", FailedChecks()))
 
         assert report.analytic("failed").result == Table(
-            ["check", "value", "requirement"],
+            ["check", "value", "required"],
             [
-                ["failing", 2, "at least 3"],
-                ["nodes / failing / lorem", 1, "at least 2"],
-                ["nodes / failing / ipsum", 1, "at least 2"],
+                [("failing",), 2, "at least 3"],
+                [("nodes", "failing", "lorem"), 1, "at least 2"],
+                [("nodes", "failing", "ipsum"), 1, "at least 2"],
             ],
         )
 
@@ -128,7 +137,22 @@ class TestAnalyticsFailed(unittest.TestCase):
         assert report.analytic("broken").result == 1
 
     def test_title(self) -> None:
-        assert AnalyticsFailed().title() == "Analytics failed"
+        assert AnalyticsFailed().title() == "Entries not computed"
+
+
+class TestFailedAnalytics(unittest.TestCase):
+    def test_compute(self) -> None:
+        report = create_report(
+            create_group().add_conclusion("broken", FailedAnalytics())
+        )
+
+        assert report.analytic("broken").result == Table(
+            ["entry", "exception type", "message"],
+            [[("raising",), "builtins.ValueError", "consectetur"]],
+        )
+
+    def test_title(self) -> None:
+        assert FailedAnalytics().title() == "Entries not computed, with their errors"
 
 
 class TestMean(unittest.TestCase):
@@ -154,10 +178,39 @@ class TestMean(unittest.TestCase):
     def test_title(self) -> None:
         assert Mean([]).title() == "Mean"
 
-    def test_parameters(self) -> None:
-        _, first = EvaluationGroup[MedRecord]().place_analytic("first", Score(0.5))
 
-        assert Mean([first, first]).parameters() == {"score_count": 2}
+class TestKeyedMean(unittest.TestCase):
+    def test_compute(self) -> None:
+        nested, score = EvaluationGroup[MedRecord]().place_analytic(
+            "score", NodeScore()
+        )
+        nested, raising = nested.place_analytic("raising", Raising())
+        group, nodes = EvaluationGroup[MedRecord]().place_group_across(
+            "nodes", ByNode(), nested
+        )
+
+        report = create_report(
+            group.add_conclusion("mean", KeyedMean(nodes[score])).add_conclusion(
+                "broken", KeyedMean(nodes[raising])
+            )
+        )
+
+        mean = report.analytic("mean").result
+        assert isinstance(mean, float)
+        assert math.isclose(mean, 0.75)
+        broken = report.analytic("broken").result
+        assert isinstance(broken, Failure)
+        assert broken.message == "nodes / raising / lorem failed: consectetur"
+
+    def test_title(self) -> None:
+        nested, score = EvaluationGroup[MedRecord]().place_analytic(
+            "score", NodeScore()
+        )
+        _, nodes = EvaluationGroup[MedRecord]().place_group_across(
+            "nodes", ByNode(), nested
+        )
+
+        assert KeyedMean(nodes[score]).title() == "Mean"
 
 
 class TestKeyedTable(unittest.TestCase):

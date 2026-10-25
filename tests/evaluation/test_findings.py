@@ -5,7 +5,12 @@ from typing import List, Mapping, Optional, Sequence, Union
 import pytest
 from graphrecords import Value
 
-from medrecords.evaluation.analytic import Analytic, Assessment, ReportValue
+from medrecords.evaluation.analytic import (
+    Analytic,
+    Assessment,
+    EntryPath,
+    ReportValue,
+)
 from medrecords.evaluation.entry import (
     AnalyticEntry,
     DerivationEntry,
@@ -151,8 +156,9 @@ def create_findings(
     entries: Optional[Sequence[Entry]] = None,
     owner: Optional[EvaluationGroup[MedRecord]] = None,
     key: Union[Value, _Unkeyed] = _UNKEYED,
+    path: EntryPath = (),
 ) -> Findings[AtRoot]:
-    return Findings(create_entries() if entries is None else entries, owner, key)
+    return Findings(create_entries() if entries is None else entries, owner, key, path)
 
 
 def create_placement(*steps: _Step) -> Placement[AtRoot, int]:
@@ -168,11 +174,12 @@ class TestFindings(unittest.TestCase):
     def test_init(self) -> None:
         entries = create_entries()
 
-        findings = Findings(entries, None, "a")
+        findings = Findings(entries, None, "a", ("lorem",))
 
         assert findings._entries is entries
         assert findings._owner is None
         assert findings._key == "a"
+        assert findings._path == ("lorem",)
 
     def test_getitem(self) -> None:
         findings = create_findings()
@@ -200,7 +207,7 @@ class TestFindings(unittest.TestCase):
         assert keyed[create_placement(INSIDE, COUNT)] == {"x": 1, "y": 3}
 
         group, count = EvaluationGroup[MedRecord]().place_analytic("count", NodeCount())
-        owned = Findings([create_analytic("count", 3)], group, _UNKEYED)
+        owned = Findings([create_analytic("count", 3)], group, _UNKEYED, ())
 
         assert owned[count] == 3
         assert NodeCount().compute(MedRecord()) == 0
@@ -257,12 +264,78 @@ class TestFindings(unittest.TestCase):
 
         group, _ = EvaluationGroup[MedRecord]().place_analytic("count", NodeCount())
         _, foreign = EvaluationGroup[MedRecord]().place_analytic("count", NodeCount())
-        owned = Findings([create_analytic("count", 3)], group, _UNKEYED)
+        owned = Findings([create_analytic("count", 3)], group, _UNKEYED, ())
 
         with pytest.raises(
             NoResultError, match=r"Placement\('count'\) was not placed in this group"
         ):
             owned[foreign]
+
+    def test_path(self) -> None:
+        findings = create_findings()
+
+        assert findings.path(create_placement(COUNT)) == ("count",)
+        assert findings.path(create_placement(NESTED, COUNT)) == ("nested", "count")
+        assert findings.path(create_placement(EACH, COUNT), "a") == (
+            "each",
+            "a",
+            "count",
+        )
+        assert findings.path(create_placement(ACROSS, COUNT)) == ("across", "count")
+        assert findings.path(create_placement(ACROSS, INSIDE, COUNT), "x") == (
+            "across",
+            "inside",
+            "x",
+            "count",
+        )
+        assert findings.path(create_placement(ACROSS, AGAIN, COUNT), "x") == (
+            "across",
+            "again",
+            "x",
+            "count",
+        )
+        assert findings.path(create_placement(NESTED, MISSING)) == (
+            "nested",
+            "missing",
+        )
+
+        keyed = create_findings(create_across_entries(), key="a", path=("across",))
+
+        assert keyed.path(create_placement(INSIDE, COUNT), "y") == (
+            "across",
+            "inside",
+            "y",
+            "count",
+        )
+
+        group, count = EvaluationGroup[MedRecord]().place_analytic("count", NodeCount())
+        owned = Findings([create_analytic("count", 3)], group, _UNKEYED, ("sit",))
+
+        assert owned.path(count) == ("sit", "count")
+
+    def test_invalid_path(self) -> None:
+        findings = create_findings()
+
+        with pytest.raises(ValueError, match="expected a key for each"):
+            findings.path(create_placement(EACH, COUNT))
+
+        with pytest.raises(ValueError, match="expected 0 keys, got 1"):
+            findings.path(create_placement(COUNT), "a")
+
+        with pytest.raises(NoResultError, match="each / z is not in the findings"):
+            findings.path(create_placement(EACH, COUNT), "z")
+
+        with pytest.raises(NoResultError, match="missing is not in the findings"):
+            findings.path(create_placement(MISSING, COUNT))
+
+        group, _ = EvaluationGroup[MedRecord]().place_analytic("count", NodeCount())
+        _, foreign = EvaluationGroup[MedRecord]().place_analytic("count", NodeCount())
+        owned = Findings([create_analytic("count", 3)], group, _UNKEYED, ())
+
+        with pytest.raises(
+            NoResultError, match=r"Placement\('count'\) was not placed in this group"
+        ):
+            owned.path(foreign)
 
     def test_each(self) -> None:
         findings = create_findings()
@@ -330,8 +403,17 @@ class TestFindings(unittest.TestCase):
             (("inside", "y", "count"), 4),
         ]
 
+        placed = create_findings(create_across_entries(), key="b", path=("across",))
+
+        assert list(placed.each(int, GroupPlacement(COMPLETE))) == [
+            (("across", "complete", "count"), 2)
+        ]
+        assert list(placed.each(int, KeyedGroupPlacement(AGAIN))) == [
+            (("across", "again", "x", "count"), 6)
+        ]
+
         group, _ = EvaluationGroup[MedRecord]().place_analytic("count", NodeCount())
-        owned = Findings([create_analytic("count", 3)], group, _UNKEYED)
+        owned = Findings([create_analytic("count", 3)], group, _UNKEYED, ())
 
         assert list(owned.each(int)) == [(("count",), 3)]
 
@@ -353,7 +435,7 @@ class TestFindings(unittest.TestCase):
         _, foreign = EvaluationGroup[MedRecord]().place_group(
             "nested", EvaluationGroup[MedRecord]()
         )
-        owned = Findings([create_analytic("count", 3)], group, _UNKEYED)
+        owned = Findings([create_analytic("count", 3)], group, _UNKEYED, ())
 
         with pytest.raises(
             NoResultError,
@@ -383,6 +465,14 @@ class TestFindings(unittest.TestCase):
             (("inner",), create_failure("elit")),
         ]
         assert list(create_findings(create_across_entries(), key="a").failures()) == []
+        assert list(
+            create_findings(
+                create_across_entries(), key="b", path=("across",)
+            ).failures()
+        ) == [
+            (("across", "partial"), create_failure("adipiscing")),
+            (("across", "inner"), create_failure("elit")),
+        ]
 
     def test_repr(self) -> None:
         assert repr(create_findings()) == "Findings(entries=7)"

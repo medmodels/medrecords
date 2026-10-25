@@ -40,7 +40,9 @@ def create_report(
     on_failure: OnFailure = OnFailure.Record,
     on_progress: Optional[ProgressHandler] = None,
 ) -> Report:
-    return Run(on_failure, on_progress).report("amet", None, group, create_medrecord())
+    return Run(on_failure, on_progress).report(
+        "amet", None, {}, group, create_medrecord()
+    )
 
 
 class RaisingProgress:
@@ -222,6 +224,29 @@ class ToNone(Derivation[MedRecord, None]):
 class Nothing(Analytic[None, int]):
     def compute(self, nothing: None) -> int:
         return 0
+
+
+class TitledHalves(Derivation[MedRecord, Mapping[Value, MedRecord]]):
+    def derive(self, medrecord: MedRecord) -> Dict[Value, MedRecord]:
+        return {"first": medrecord, "second": medrecord}
+
+    def titles(
+        self, medrecord: MedRecord, derived: Mapping[Value, MedRecord], /
+    ) -> Mapping[Value, str]:
+        return {"first": f"First of {medrecord.node_count()}", "third": "Third"}
+
+
+class UntitledHalves(TitledHalves):
+    def titles(
+        self, medrecord: MedRecord, derived: Mapping[Value, MedRecord], /
+    ) -> Mapping[Value, str]:
+        msg = "nisi"
+        raise ValueError(msg)
+
+
+class Sizes(Derivation[MedRecord, Mapping[Value, MedRecord]]):
+    def derive(self, medrecord: MedRecord) -> Dict[Value, MedRecord]:
+        return {"all": medrecord, "one": medrecord.keep_nodes(["lorem"])}
 
 
 class TestRun(unittest.TestCase):
@@ -409,6 +434,52 @@ class TestRun(unittest.TestCase):
             for args in progress
             if isinstance(args["finished"], KeyedResult)
         ] == ["first", "second"] * 5 + ["first"]
+
+    def test_report_titles(self) -> None:
+        inner = EvaluationGroup[MedRecord]().add_analytic("count", NodeCount())
+        group = (
+            EvaluationGroup[MedRecord]()
+            .add_group_over_each("titled", TitledHalves(), inner)
+            .add_group_over_each("untitled", UntitledHalves(), inner)
+            .add_group_across(
+                "sizes",
+                Sizes(),
+                EvaluationGroup[MedRecord]()
+                .add_group_over_each("titled", TitledHalves(), inner)
+                .add_group_over_each("untitled", UntitledHalves(), inner),
+            )
+        )
+
+        report = Run(OnFailure.Record, None).report(
+            "amet", None, {"seed": 7}, group, create_medrecord()
+        )
+
+        assert report.parameters == {"seed": 7}
+        assert [entry.title for entry in report.group("titled").entries] == [
+            "First of 3",
+            "second",
+        ]
+
+        untitled = report.group("untitled")
+
+        assert untitled.entries == []
+        assert untitled.derivation is not None
+        assert untitled.derivation.failure is not None
+        assert untitled.derivation.failure.message == "nisi"
+
+        sizes = report.group("sizes")
+
+        assert [entry.title for entry in sizes.keyed_group("titled").entries] == [
+            "First of 3",
+            "second",
+        ]
+        assert sizes.keyed_group("untitled").entries == []
+        assert list(sizes.keyed_group("untitled").derivations) == ["all", "one"]
+
+        with pytest.raises(ValueError, match="nisi"):
+            Run(OnFailure.Raise, None).report(
+                "amet", None, {}, group, create_medrecord()
+            )
 
     def test_report_over_none(self) -> None:
         group = EvaluationGroup[MedRecord]().add_group_over(

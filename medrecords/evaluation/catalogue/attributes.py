@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import (
     TYPE_CHECKING,
     Generic,
+    List,
     Mapping,
     Optional,
     Sequence,
@@ -25,10 +26,12 @@ from graphrecords import Value
 from medrecords.evaluation.analytic import (
     Analytic,
     Assessment,
+    Bins,
     Counts,
     Distribution,
     Histogram,
     ResultType,
+    Scale,
     Unit,
 )
 from medrecords.evaluation.results import read, read_each, read_pairs
@@ -230,7 +233,28 @@ class AttributeSum(AttributeAnalytic[IndexType, Value]):
 
 
 class AttributeDistribution(AttributeAnalytic[IndexType, Distribution]):
-    """The distribution of a numeric attribute."""
+    """The distribution of a numeric attribute, its value axis named by it."""
+
+    _bins: Optional[Bins]
+
+    def __init__(
+        self,
+        attribute: AttributeName,
+        elements: querying.ElementsExpression[IndexType, querying.Unordered],
+        *,
+        bins: Optional[Bins] = None,
+    ) -> None:
+        """Initializes a distribution of attribute values.
+
+        Args:
+            attribute (AttributeName): The attribute to look at.
+            elements (querying.ElementsExpression[IndexType, querying.Unordered]):
+                The nodes or edges to look at.
+            bins (Optional[Bins]): How the histogram of the distribution chooses
+                its bins, or None to choose every setting. Defaults to None.
+        """
+        super().__init__(attribute, elements)
+        self._bins = bins
 
     def compute(self, medrecord: MedRecord) -> Distribution:
         """Collects every value into a distribution.
@@ -241,7 +265,11 @@ class AttributeDistribution(AttributeAnalytic[IndexType, Distribution]):
         Returns:
             Distribution: The values, of which there must be at least one.
         """
-        return Distribution(read_each(self._values(medrecord).evaluate(), float))
+        return Distribution(
+            read_each(self._values(medrecord).evaluate(), float),
+            bins=self._bins,
+            value_label=str(self._attribute),
+        )
 
     def title(self) -> Optional[str]:
         """Names the analytic.
@@ -256,16 +284,19 @@ class AttributeHistogram(AttributeAnalytic[IndexType, Histogram]):
     """The histogram of a numeric attribute over fixed bin edges.
 
     The edges are fixed before the run, so the histograms of several MedRecords
-    can be drawn on one axis.
+    can be drawn on one axis. The value axis is named by the attribute.
     """
 
-    _edges: Sequence[float]
+    _edges: List[float]
+    _scale: Scale
 
     def __init__(
         self,
         attribute: AttributeName,
         elements: querying.ElementsExpression[IndexType, querying.Unordered],
         edges: Sequence[float],
+        *,
+        scale: Scale = Scale.Linear,
     ) -> None:
         """Initializes a histogram of attribute values.
 
@@ -273,10 +304,15 @@ class AttributeHistogram(AttributeAnalytic[IndexType, Histogram]):
             attribute (AttributeName): The attribute to count.
             elements (querying.ElementsExpression[IndexType, querying.Unordered]):
                 The nodes or edges to look at.
-            edges (Sequence[float]): The bin edges, at least two, increasing.
+            edges (Sequence[float]): The bin edges, at least two, increasing;
+                above zero on a logarithmic scale.
+            scale (Scale): How the value axis is spaced. Defaults to
+                Scale.Linear.
         """
         super().__init__(attribute, elements)
-        self._edges = Histogram._checked_edges(edges)
+        Histogram._checked_edges(edges)
+        self._edges = list(edges)
+        self._scale = scale
 
     def compute(self, medrecord: MedRecord) -> Histogram:
         """Counts every value into the bins.
@@ -289,7 +325,10 @@ class AttributeHistogram(AttributeAnalytic[IndexType, Histogram]):
                 statistics of the values.
         """
         return Histogram.from_values(
-            read_each(self._values(medrecord).evaluate(), float), self._edges
+            read_each(self._values(medrecord).evaluate(), float),
+            self._edges,
+            scale=self._scale,
+            value_label=str(self._attribute),
         )
 
     def title(self) -> Optional[str]:
@@ -298,10 +337,10 @@ class AttributeHistogram(AttributeAnalytic[IndexType, Histogram]):
         Returns:
             Optional[str]: The heading.
         """
-        return f"Histogram of {self._attribute}"
+        return f"Distribution of {self._attribute}"
 
     def parameters(self) -> Mapping[str, Detail]:
-        """Records the attribute and the edges.
+        """Records the attribute and the edges, as given.
 
         Returns:
             Mapping[str, Detail]: The details.
@@ -353,7 +392,8 @@ class AttributeCounts(AttributeAnalytic[IndexType, Counts]):
 
         Returns:
             Counts: How often every listed value occurs, with the number of
-                elements carrying the attribute as the total.
+                elements carrying the attribute as the total; the values left
+                out by the limit are the less frequent values.
         """
         carrying = self._carrying(medrecord)
         counts = carrying.group_by(carrying.attribute(self._attribute)).count()
@@ -363,7 +403,12 @@ class AttributeCounts(AttributeAnalytic[IndexType, Counts]):
         if self._limit is not None:
             ranked = ranked.take(self._limit)
 
-        return Counts(dict(read_pairs(ranked.evaluate(), int)), total)
+        return Counts(
+            dict(read_pairs(ranked.evaluate(), int)),
+            total,
+            value_label=str(self._attribute),
+            remainder_label=None if self._limit is None else "less frequent values",
+        )
 
     def title(self) -> Optional[str]:
         """Names the analytic.
@@ -379,7 +424,7 @@ class AttributeCounts(AttributeAnalytic[IndexType, Counts]):
         Returns:
             Optional[str]: The text under the heading.
         """
-        return "Shares are of the elements that carry the attribute."
+        return f"Shares are of the entries that carry {self._attribute}."
 
     def parameters(self) -> Mapping[str, Detail]:
         """Records the attribute and the limit.
@@ -494,7 +539,7 @@ class AttributeCompleteness(AttributeAnalytic[IndexType, Union[float, Assessment
         Returns:
             Optional[str]: The text under the heading.
         """
-        return "Share of the elements that carry the attribute."
+        return f"The share of entries with a value of {self._attribute}."
 
     def parameters(self) -> Mapping[str, Detail]:
         """Records the attribute and the minimum.

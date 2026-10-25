@@ -25,12 +25,6 @@ MedRecords is an opinionated wrapper around [GraphRecords](https://github.com/me
 pip install medrecords
 ```
 
-Rendering a report to PDF needs the `pdf` extra:
-
-```bash
-pip install medrecords[pdf]
-```
-
 ## Building a Record
 
 Every call returns a new record:
@@ -160,7 +154,7 @@ from medrecords.evaluation import Document, Report
 report.to_json("report.json")
 Report.from_json("report.json")
 
-Document(report).to_pdf("report.pdf")  # needs the pdf extra
+Document(report).to_pdf("report.pdf")
 ```
 
 ## Documentation

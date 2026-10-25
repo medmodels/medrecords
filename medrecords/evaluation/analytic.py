@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import copy
 import math
+import sys
 from abc import ABC, abstractmethod
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from datetime import datetime, timedelta
 from enum import Enum
 from fractions import Fraction
@@ -16,6 +17,7 @@ from typing import (
     TYPE_CHECKING,
     BinaryIO,
     Dict,
+    Final,
     Generic,
     Iterable,
     List,
@@ -24,6 +26,7 @@ from typing import (
     Optional,
     Protocol,
     Sequence,
+    Tuple,
     TypeAlias,
     TypedDict,
     TypeVar,
@@ -47,20 +50,54 @@ class Unit(Enum):
     Points = "points"
 
 
-class Table:
-    """A tabular report value: headings and rows of values.
+class Scale(Enum):
+    """Enumeration of how a chart spaces a value axis.
 
-    A column may declare the unit of its numbers; the cells stay as given.
+    A linear axis spaces equal differences evenly. A logarithmic axis spaces
+    equal ratios evenly and holds positive values only; a histogram on one
+    counts every value below its first edge, zero and negative values among
+    them, below the edges.
+    """
+
+    Linear = "linear"
+    Logarithmic = "logarithmic"
+
+
+class Arrangement(Enum):
+    """Enumeration of how a typeset report draws the results of several keys.
+
+    Overlaid results share one chart; results in panels get one chart each,
+    side by side on a shared axis.
+    """
+
+    Overlay = "overlay"
+    Panels = "panels"
+
+
+#: A type alias for the names leading from the report root to an entry.
+EntryPath: TypeAlias = Tuple["Value", ...]
+
+#: A type alias for one cell of a table: a value, or an entry of the report named
+#: by its path.
+Cell: TypeAlias = Union["Value", EntryPath]
+
+
+class Table:
+    """A tabular report value: headings and rows of cells.
+
+    A cell is a value or the path of an entry of the report, which a typeset
+    report prints as a reference to that entry. A column may declare the unit of
+    its numbers; the cells stay as given.
     """
 
     _headings: List[Identifier]
-    _rows: List[List[Value]]
+    _rows: List[List[Cell]]
     _units: Dict[Identifier, Unit]
 
     def __init__(
         self,
         headings: Iterable[Identifier],
-        rows: Iterable[Iterable[Value]],
+        rows: Iterable[Iterable[Cell]],
         *,
         units: Optional[Mapping[Identifier, Unit]] = None,
     ) -> None:
@@ -68,7 +105,8 @@ class Table:
 
         Args:
             headings (Iterable[Identifier]): One heading per position in a row.
-            rows (Iterable[Iterable[Value]]): The rows, each as long as the headings.
+            rows (Iterable[Iterable[Cell]]): The rows, each as long as the
+                headings.
             units (Optional[Mapping[Identifier, Unit]]): The unit of the numbers
                 of a column, by heading, for the columns that have one. Defaults
                 to None.
@@ -87,7 +125,7 @@ class Table:
 
         for row in self._rows:
             if len(row) != len(self._headings):
-                msg = "every row must hold one value per heading"
+                msg = "every row must hold one cell per heading"
                 raise ValueError(msg)
 
         for heading in self._units:
@@ -120,10 +158,10 @@ class Table:
             TypeError: If a cell holds something a table cannot report, such as
                 a date, a list or a decimal.
         """
-        rows: List[List[Value]] = []
+        rows: List[List[Cell]] = []
 
         for row in dataframe.iter_rows():
-            values: List[Value] = []
+            values: List[Cell] = []
 
             for heading, cell in zip(dataframe.columns, row, strict=True):
                 if cell is not None and not isinstance(
@@ -141,18 +179,41 @@ class Table:
         """Converts the table to a Polars DataFrame, one column per heading.
 
         An integer heading becomes the text of the number, because a column
-        name is a string. A column holding values of more than one kind is
-        rejected by Polars.
+        name is a string. A path cell becomes its names joined with " / ". A
+        column holding both integers and floats holds floats, since both are
+        numbers; a column holding values of more than one other kind is rejected
+        by Polars.
 
         Returns:
             pl.DataFrame: The table as a DataFrame.
         """
         return pl.DataFrame(
             {
-                str(heading): [row[position] for row in self._rows]
+                str(heading): self._column(
+                    [self._flattened(row[position]) for row in self._rows]
+                )
                 for position, heading in enumerate(self._headings)
             }
         )
+
+    @staticmethod
+    def _column(values: List[Value]) -> List[Value]:
+        if not any(isinstance(value, float) for value in values):
+            return values
+
+        return [
+            float(value)
+            if isinstance(value, int) and not isinstance(value, bool)
+            else value
+            for value in values
+        ]
+
+    @staticmethod
+    def _flattened(cell: Cell) -> Value:
+        if isinstance(cell, tuple):
+            return " / ".join(str(name) for name in cell)
+
+        return cell
 
     @property
     def headings(self) -> List[Identifier]:
@@ -164,11 +225,11 @@ class Table:
         return list(self._headings)
 
     @property
-    def rows(self) -> List[List[Value]]:
+    def rows(self) -> List[List[Cell]]:
         """The rows of the Table.
 
         Returns:
-            List[List[Value]]: Every row, in order.
+            List[List[Cell]]: Every row, in order.
         """
         return [list(row) for row in self._rows]
 
@@ -220,7 +281,13 @@ class Figure(Protocol):
     """Protocol for figures that save themselves as SVG."""
 
     def savefig(
-        self, file: BinaryIO, /, *, format: str, bbox_inches: Literal["tight"]
+        self,
+        file: BinaryIO,
+        /,
+        *,
+        format: str,
+        bbox_inches: Literal["tight"],
+        metadata: Dict[str, Optional[str]],
     ) -> None:
         """Saves the figure.
 
@@ -228,6 +295,8 @@ class Figure(Protocol):
             file (BinaryIO): Where the figure is written to.
             format (str): The image format.
             bbox_inches (Literal["tight"]): How the bounding box is chosen.
+            metadata (Dict[str, Optional[str]]): The metadata to write, by key;
+                None leaves a key out.
         """
         ...
 
@@ -249,6 +318,8 @@ class Plot:
     def from_figure(cls, figure: Figure) -> Plot:
         """Creates a plot from a figure by saving it as SVG.
 
+        The SVG carries no date, so the same figure always gives the same plot.
+
         Args:
             figure (Figure): The figure to save, such as a matplotlib figure or a
                 seaborn grid.
@@ -257,7 +328,9 @@ class Plot:
             Plot: The figure as a plot.
         """
         buffer = BytesIO()
-        figure.savefig(buffer, format="svg", bbox_inches="tight")
+        figure.savefig(
+            buffer, format="svg", bbox_inches="tight", metadata={"Date": None}
+        )
         return cls(buffer.getvalue().decode())
 
     @property
@@ -481,8 +554,8 @@ class Assessment:
 
         Args:
             value (Value): The value that was found.
-            requirement_label (str): What was required of the value, in words
-                that follow "passed" or "failed", such as "at least 99.0%".
+            requirement_label (str): The condition the value must meet, printed
+                after "required:", such as "at least 99.0%".
             passed (bool): Whether the value met the requirement.
             unit (Optional[Unit]): What a numeric value measures, or None for a
                 plain value. Defaults to None.
@@ -587,6 +660,35 @@ class Statistics(TypedDict):
     maximum: float
 
 
+#: The share of each distribution's values a shared histogram may leave below its
+#: first edge, and again above its last, unless the bins ask for another share.
+_OUTSIDE_SHARE: Final[float] = 0.005
+
+#: A bar counts as visible from this share of its distribution's tallest bar on.
+_VISIBLE_SHARE: Final[float] = 0.02
+
+#: A distribution shown on fewer visible bars than this is crowded.
+_FEWEST_VISIBLE_BARS: Final[int] = 5
+
+#: A distribution with more of its values than this share in one bar is crowded.
+_MOST_IN_ONE_BAR: Final[float] = 0.4
+
+#: Whole numbers get one bin each while their range spans at most this many
+#: numbers per bin asked for.
+_WHOLE_NUMBERS_PER_BIN: Final[int] = 4
+
+#: The factor between the edges of logarithmic whole number bins; every power of
+#: it is odd, so every edge lies halfway between whole numbers.
+_WHOLE_NUMBER_RATIO: Final[int] = 3
+
+#: Whole numbers are binned as such only below this magnitude, where the points
+#: halfway between them are still floats.
+_LARGEST_WHOLE_NUMBER: Final[float] = 2.0**52
+
+#: The leading digits of the round numbers that rounded edges fall on.
+_ROUND_STEPS: Final[Tuple[int, ...]] = (1, 2, 5)
+
+
 def _rounded_width(span: float) -> Fraction:
     exponent = math.floor(math.log10(span))
     fraction = span / 10.0**exponent
@@ -603,28 +705,187 @@ def _rounded_width(span: float) -> Fraction:
     return step * Fraction(10) ** exponent
 
 
+class Bins:
+    """How the histogram of a distribution chooses its bins.
+
+    Every setting left unset is chosen by the binning rule of
+    Distribution.shared_histograms.
+    """
+
+    _count: Optional[int]
+    _scale: Optional[Scale]
+    _outside_share: Optional[float]
+
+    def __init__(
+        self,
+        *,
+        count: Optional[int] = None,
+        scale: Optional[Scale] = None,
+        outside_share: Optional[float] = None,
+    ) -> None:
+        """Initializes bin settings.
+
+        Args:
+            count (Optional[int]): The number of bins to aim for, or None to
+                choose it. Defaults to None.
+            scale (Optional[Scale]): The scale of the value axis, or None to
+                choose it from the values. Defaults to None.
+            outside_share (Optional[float]): The share of each distribution's
+                values the axis may leave below its first edge, and again above
+                its last, or None for 0.5 percent. Defaults to None.
+
+        Raises:
+            ValueError: If fewer than one bin is asked for, or the outside share
+                is not at least 0 and below 0.5.
+        """
+        if count is not None and count < 1:
+            msg = "a histogram needs at least one bin"
+            raise ValueError(msg)
+
+        if outside_share is not None and not 0 <= outside_share < 0.5:
+            msg = f"expected an outside share from 0 to below 0.5, got {outside_share}"
+            raise ValueError(msg)
+
+        self._count = count
+        self._scale = scale
+        self._outside_share = outside_share
+
+    @property
+    def count(self) -> Optional[int]:
+        """The number of bins to aim for.
+
+        Returns:
+            Optional[int]: The number of bins, or None to choose it.
+        """
+        return self._count
+
+    @property
+    def scale(self) -> Optional[Scale]:
+        """The scale of the value axis.
+
+        Returns:
+            Optional[Scale]: The scale, or None to choose it from the values.
+        """
+        return self._scale
+
+    @property
+    def outside_share(self) -> Optional[float]:
+        """The share of each distribution's values the axis may leave out per side.
+
+        Returns:
+            Optional[float]: The share, or None for 0.5 percent.
+        """
+        return self._outside_share
+
+    def describe(self) -> str:
+        """Puts the settings that are set in words, for the parameters of a report.
+
+        Returns:
+            str: The settings, or "chosen from the values" when none is set.
+        """
+        parts: List[str] = []
+
+        if self._count is not None:
+            parts.append(
+                f"about {self._count} bars, or one per value for values without "
+                f"decimals that span at most {_WHOLE_NUMBERS_PER_BIN * self._count} "
+                "numbers"
+            )
+
+        if self._scale is not None:
+            parts.append(f"{self._scale.value} scale")
+
+        if self._outside_share is not None:
+            parts.append(
+                f"at most {self._outside_share:.1%} of the values outside the axis "
+                "at each end"
+            )
+
+        if not parts:
+            return "chosen from the values"
+
+        return "; ".join(parts)
+
+    def __eq__(self, other: object) -> bool:
+        """Compares the Bins with another one by their settings.
+
+        Args:
+            other (object): The object to compare against.
+
+        Returns:
+            bool: True if both hold the same settings, otherwise False.
+        """
+        if not isinstance(other, Bins):
+            return NotImplemented
+
+        return (
+            self._count == other._count
+            and self._scale == other._scale
+            and self._outside_share == other._outside_share
+        )
+
+    def __hash__(self) -> int:
+        """Hashes the Bins by their settings.
+
+        Returns:
+            int: The hash.
+        """
+        return hash((self._count, self._scale, self._outside_share))
+
+    def __repr__(self) -> str:
+        """Returns the string representation of the Bins.
+
+        Returns:
+            str: The settings of the Bins.
+        """
+        return (
+            f"Bins(count={self._count!r}, scale={self._scale!r}, "
+            f"outside_share={self._outside_share!r})"
+        )
+
+
 class Distribution:
     """The values of a numeric distribution and their summary statistics."""
 
     _values: List[float]
-    _bin_count: Optional[int]
+    _bins: Optional[Bins]
+    _value_label: Optional[str]
+    _count_label: Optional[str]
+    _arrangement: Optional[Arrangement]
 
     def __init__(
-        self, values: Iterable[float], bin_count: Optional[int] = None
+        self,
+        values: Iterable[float],
+        *,
+        bins: Optional[Bins] = None,
+        value_label: Optional[str] = None,
+        count_label: Optional[str] = None,
+        arrangement: Optional[Arrangement] = None,
     ) -> None:
         """Initializes a distribution from its values.
 
         Args:
             values (Iterable[float]): The values, at least one, all finite.
-            bin_count (Optional[int]): The number of bins its histogram aims
-                for, or None for Sturges' rule. Defaults to None.
+            bins (Optional[Bins]): How its histogram chooses its bins, or None
+                to choose every setting. Defaults to None.
+            value_label (Optional[str]): What the values measure, as the value
+                axis names it, such as "age in years", or None for no axis
+                caption. Defaults to None.
+            count_label (Optional[str]): What one value is, in the plural, as
+                the share axis and the legend name it, such as "patients", or
+                None for "values". Defaults to None.
+            arrangement (Optional[Arrangement]): How a typeset report draws the
+                distributions of several keys, or None to choose it. Defaults to
+                None.
 
         Raises:
-            ValueError: If there is no value, a value is not finite, or fewer
-                than one bin is asked for.
+            ValueError: If there is no value, or a value is not finite.
         """
         self._values = [float(value) for value in values]
-        self._bin_count = bin_count
+        self._bins = bins
+        self._value_label = value_label
+        self._count_label = count_label
+        self._arrangement = arrangement
 
         if not self._values:
             msg = "a distribution must hold at least one value"
@@ -632,10 +893,6 @@ class Distribution:
 
         if not all(math.isfinite(value) for value in self._values):
             msg = "every value of a distribution must be finite"
-            raise ValueError(msg)
-
-        if bin_count is not None and bin_count < 1:
-            msg = "a histogram needs at least one bin"
             raise ValueError(msg)
 
     @property
@@ -648,13 +905,40 @@ class Distribution:
         return list(self._values)
 
     @property
-    def bin_count(self) -> Optional[int]:
-        """The number of bins the histogram of the Distribution aims for.
+    def bins(self) -> Optional[Bins]:
+        """How the histogram of the Distribution chooses its bins.
 
         Returns:
-            Optional[int]: The number of bins, or None for Sturges' rule.
+            Optional[Bins]: The bin settings, or None to choose every setting.
         """
-        return self._bin_count
+        return self._bins
+
+    @property
+    def value_label(self) -> Optional[str]:
+        """What the values measure.
+
+        Returns:
+            Optional[str]: The caption of the value axis, or None.
+        """
+        return self._value_label
+
+    @property
+    def count_label(self) -> Optional[str]:
+        """What one value is, in the plural.
+
+        Returns:
+            Optional[str]: The noun of the share axis and the legend, or None.
+        """
+        return self._count_label
+
+    @property
+    def arrangement(self) -> Optional[Arrangement]:
+        """How a typeset report draws the distributions of several keys.
+
+        Returns:
+            Optional[Arrangement]: The arrangement, or None to choose it.
+        """
+        return self._arrangement
 
     @property
     def count(self) -> int:
@@ -752,124 +1036,423 @@ class Distribution:
             "maximum": ordered[-1],
         }
 
-    def histogram(self, bin_count: Optional[int] = None) -> Histogram:
-        """Counts the values in bins of equal, rounded width.
+    def histogram(self, bins: Optional[Bins] = None) -> Histogram:
+        """Counts the values in the bins the binning rule chooses.
 
         Args:
-            bin_count (Optional[int]): The number of bins to aim for, or None
-                for the number the Distribution was given, or Sturges' rule if
-                it was given none. Defaults to None.
+            bins (Optional[Bins]): Settings that override the ones the
+                Distribution was given, or None for those. Defaults to None.
 
         Returns:
-            Histogram: The counts per bin from the lowest edge to the highest,
-                with the statistics of the values.
+            Histogram: The counts per bin, the counts outside the edges, and the
+                statistics and labels of the values.
         """
-        return Distribution.shared_histograms([self], bin_count)[0]
+        return Distribution.shared_histograms([self], bins)[0]
 
     @classmethod
     def shared_histograms(
-        cls, distributions: Sequence[Distribution], bin_count: Optional[int] = None
+        cls, distributions: Sequence[Distribution], bins: Optional[Bins] = None
     ) -> List[Histogram]:
         """Counts the values of several distributions in the same bins.
 
-        The bins span the smallest and the largest value over all distributions
-        in equal, rounded widths, so that the histograms can be drawn on one
-        axis.
+        Each distribution keeps at most the outside share of its values below
+        the first edge and the same share above the last; whole numbers keep
+        their minimum. Whole numbers get one bin per number while the range
+        spans at most four times the bin count of them; beyond that, bins of a
+        rounded whole width with zero in a bar one wide of its own, or,
+        on a logarithmic axis, bins that each end three times as far from zero
+        as the one before. Other values get bins of a rounded width, 1, 2 or 5
+        times a power of ten, or, on a logarithmic axis, bins of one ratio
+        between outer edges at 1, 2 or 5 times a power of ten, over the
+        positive values. Unless a scale is declared, the axis is linear unless
+        the linear picture crowds one of the distributions, showing it on fewer
+        than five bars that reach 2 percent of its tallest bar or putting more
+        than 40 percent of its values into one bar, and the logarithmic picture
+        puts less of the worst distribution's values into one bar, or as much
+        on more visible bars.
+
+        Every setting the bins argument leaves unset comes from the
+        distributions: the largest bin count one was given, or Sturges' rule
+        on the largest distribution if none was given one; the scale and the
+        outside share they declare, or the rule's choice and 0.5 percent.
 
         Args:
             distributions (Sequence[Distribution]): The distributions, at least
                 one.
-            bin_count (Optional[int]): The number of bins to aim for, or None
-                for the largest number a distribution was given, or Sturges'
-                rule on the largest distribution if none was given any.
-                Defaults to None.
+            bins (Optional[Bins]): Settings that override the ones the
+                distributions were given, or None for those. Defaults to None.
 
         Returns:
             List[Histogram]: One histogram per distribution, in the order given,
-                each over the shared edges and with its own statistics.
+                over the shared edges and scale, each with its own outside
+                counts, statistics and labels.
 
         Raises:
-            ValueError: If there is no distribution, or fewer than one bin is
-                asked for.
+            ValueError: If there is no distribution, or the distributions
+                declare different scales or outside shares that the bins
+                argument does not override.
         """
         if not distributions:
             msg = "shared histograms need at least one distribution"
             raise ValueError(msg)
 
-        given = [
-            distribution._bin_count
+        asked = Bins() if bins is None else bins
+        declared = [
+            distribution._bins
             for distribution in distributions
-            if distribution._bin_count is not None
+            if distribution._bins is not None
         ]
-        asked = max(given, default=None) if bin_count is None else bin_count
-        largest = max(len(distribution._values) for distribution in distributions)
-        count = math.ceil(math.log2(largest)) + 1 if asked is None else asked
+        scales = {setting._scale for setting in declared if setting._scale is not None}
+        shares = {
+            setting._outside_share
+            for setting in declared
+            if setting._outside_share is not None
+        }
 
-        if count < 1:
-            msg = "a histogram needs at least one bin"
+        if asked._scale is None and len(scales) > 1:
+            msg = "the distributions declare different scales"
             raise ValueError(msg)
 
-        minimum = min(distribution.minimum for distribution in distributions)
-        maximum = max(distribution.maximum for distribution in distributions)
-        span = (maximum - minimum) / count
-        edges = cls._shared_edges(distributions, minimum, maximum, span)
+        if asked._outside_share is None and len(shares) > 1:
+            msg = "the distributions declare different outside shares"
+            raise ValueError(msg)
+
+        largest = max(len(distribution._values) for distribution in distributions)
+        given = [setting._count for setting in declared if setting._count is not None]
+        count = asked._count or max(given, default=math.ceil(math.log2(largest)) + 1)
+        scale = asked._scale or next(iter(scales), None)
+        outside_share = asked._outside_share
+
+        if outside_share is None:
+            outside_share = next(iter(shares), _OUTSIDE_SHARE)
+
+        ordered = [sorted(distribution._values) for distribution in distributions]
+        edges, chosen = cls._shared_edges(ordered, count, scale, outside_share)
 
         return [
-            Histogram._from_distribution(distribution, edges)
+            Histogram._from_distribution(distribution, edges, chosen)
             for distribution in distributions
         ]
 
     @staticmethod
-    def _shared_edges(
-        distributions: Sequence[Distribution],
-        minimum: float,
-        maximum: float,
-        span: float,
-    ) -> List[float]:
-        """Chooses the rounded edges shared histograms are counted over.
+    def _agreeing(distributions: Sequence[Distribution]) -> bool:
+        """Tells whether distributions can be counted in shared histograms as given.
 
         Args:
-            distributions (Sequence[Distribution]): The distributions binned.
-            minimum (float): The smallest value over all distributions.
-            maximum (float): The largest value over all distributions.
-            span (float): The width a bin would have before rounding.
+            distributions (Sequence[Distribution]): The distributions.
+
+        Returns:
+            bool: True if no two of them declare different scales or outside
+                shares, otherwise False.
+        """
+        declared = [
+            distribution._bins
+            for distribution in distributions
+            if distribution._bins is not None
+        ]
+        scales = {setting._scale for setting in declared if setting._scale is not None}
+        shares = {
+            setting._outside_share
+            for setting in declared
+            if setting._outside_share is not None
+        }
+
+        return len(scales) <= 1 and len(shares) <= 1
+
+    @classmethod
+    def _shared_edges(
+        cls,
+        ordered: Sequence[Sequence[float]],
+        count: int,
+        scale: Optional[Scale],
+        outside_share: float,
+    ) -> Tuple[List[float], Scale]:
+        """Chooses the edges and the scale shared histograms are counted over.
+
+        Args:
+            ordered (Sequence[Sequence[float]]): The values of every
+                distribution, sorted, at least one each.
+            count (int): The number of bins to aim for.
+            scale (Optional[Scale]): The declared scale, or None to choose one.
+            outside_share (float): The share of each distribution's values the
+                axis may leave out on each side.
+
+        Returns:
+            Tuple[List[float], Scale]: The edges, from the lowest to the
+                highest, and the scale they are drawn on.
+        """
+        whole = all(
+            value.is_integer() and abs(value) < _LARGEST_WHOLE_NUMBER
+            for values in ordered
+            for value in values
+        )
+
+        if whole:
+            low = min(values[0] for values in ordered)
+            high = max(cls._high_value(values, outside_share) for values in ordered)
+            logarithmic = cls._logarithmic_whole_number_edges(low, high)
+
+            if high - low + 1 <= _WHOLE_NUMBERS_PER_BIN * count:
+                if scale is Scale.Logarithmic and logarithmic is not None:
+                    return logarithmic, Scale.Logarithmic
+
+                return cls._whole_number_edges(low, high), Scale.Linear
+
+            linear = cls._wide_whole_number_edges(low, high, count)
+        else:
+            low = min(cls._low_value(values, outside_share) for values in ordered)
+            high = max(cls._high_value(values, outside_share) for values in ordered)
+            linear = cls._linear_edges(low, high, count)
+            logarithmic = cls._logarithmic_edges(ordered, count, outside_share)
+
+        if scale is Scale.Linear or logarithmic is None:
+            return linear, Scale.Linear
+
+        if scale is Scale.Logarithmic:
+            return logarithmic, Scale.Logarithmic
+
+        linear_bars, linear_share = cls._crowding(ordered, linear)
+
+        if linear_bars >= _FEWEST_VISIBLE_BARS and linear_share <= _MOST_IN_ONE_BAR:
+            return linear, Scale.Linear
+
+        logarithmic_bars, logarithmic_share = cls._crowding(ordered, logarithmic)
+
+        if (logarithmic_share, -logarithmic_bars) < (linear_share, -linear_bars):
+            return logarithmic, Scale.Logarithmic
+
+        return linear, Scale.Linear
+
+    @staticmethod
+    def _low_value(ordered: Sequence[float], outside_share: float) -> float:
+        """Finds the value the axis starts at for one distribution.
+
+        Args:
+            ordered (Sequence[float]): The values, sorted, at least one.
+            outside_share (float): The share of values that may lie below it.
+
+        Returns:
+            float: The value at the position of the outside share.
+        """
+        return ordered[math.floor(outside_share * (len(ordered) - 1))]
+
+    @staticmethod
+    def _high_value(ordered: Sequence[float], outside_share: float) -> float:
+        """Finds the value the axis ends at for one distribution.
+
+        Args:
+            ordered (Sequence[float]): The values, sorted, at least one.
+            outside_share (float): The share of values that may lie above it.
+
+        Returns:
+            float: The value at the position of one less the outside share.
+        """
+        return ordered[math.ceil((1 - outside_share) * (len(ordered) - 1))]
+
+    @staticmethod
+    def _whole_number_edges(low: float, high: float) -> List[float]:
+        """Chooses one bin per whole number.
+
+        Args:
+            low (float): The smallest whole number.
+            high (float): The largest whole number.
+
+        Returns:
+            List[float]: The edges halfway between the whole numbers.
+        """
+        return [number - 0.5 for number in range(int(low), int(high) + 2)]
+
+    @staticmethod
+    def _wide_whole_number_edges(low: float, high: float, count: int) -> List[float]:
+        """Chooses bins of one rounded whole width, of at least two numbers each.
+
+        With the range at zero or above, zero gets a bin of its own.
+
+        Args:
+            low (float): The smallest whole number.
+            high (float): The largest whole number the axis holds.
+            count (int): The number of bins to aim for.
+
+        Returns:
+            List[float]: The edges halfway between whole numbers.
+        """
+        if low < 0:
+            width = max(2, int(_rounded_width((high - low + 1) / count)))
+            first = math.floor(low / width) * width - 0.5
+        else:
+            start = max(low, 1)
+            width = max(2, int(_rounded_width((high - start + 1) / count)))
+            first = math.floor((start - 1) / width) * width + 0.5
+
+        edges = [first]
+
+        while edges[-1] < high + 0.5:
+            edges.append(edges[-1] + width)
+
+        if low == 0:
+            return [-0.5, *edges]
+
+        return edges
+
+    @staticmethod
+    def _logarithmic_whole_number_edges(
+        low: float, high: float
+    ) -> Optional[List[float]]:
+        """Chooses whole number bins that each end three times as far from zero.
+
+        Args:
+            low (float): The smallest whole number.
+            high (float): The largest whole number the axis holds.
+
+        Returns:
+            Optional[List[float]]: The edges, halfway between whole numbers, or
+                None when a number lies below zero or one bin cannot be made.
+        """
+        if low < 0:
+            return None
+
+        start = max(low, 1) - 0.5
+        first = 0.5
+
+        while first * _WHOLE_NUMBER_RATIO <= start:
+            first *= _WHOLE_NUMBER_RATIO
+
+        edges = [first]
+
+        while edges[-1] < high + 0.5:
+            edges.append(edges[-1] * _WHOLE_NUMBER_RATIO)
+
+        return edges if len(edges) > 1 else None
+
+    @staticmethod
+    def _linear_edges(low: float, high: float, count: int) -> List[float]:
+        """Chooses edges of one rounded width over a range.
+
+        Args:
+            low (float): The value the axis starts at.
+            high (float): The value the axis ends at.
+            count (int): The number of bins to aim for.
 
         Returns:
             List[float]: The edges, from the lowest to the highest; one bin
-                spanning the values when they cannot be told apart by rounded
-                edges, or one bin of width one when they are all the same.
+                around a single value.
         """
-        if minimum == maximum:
-            return [minimum, minimum + 1]
+        if low == high:
+            span = abs(low) / 10
+            width = _rounded_width(span) if span > 0 else Fraction(1)
 
-        if span == 0:
-            return [minimum, maximum]
+            return [float(Fraction(low) - width / 2), float(Fraction(low) + width / 2)]
 
-        width = _rounded_width(span)
-
-        if all(
-            value.is_integer()
-            for distribution in distributions
-            for value in distribution._values
-        ):
-            width = max(width, Fraction(1))
-
-        start = Fraction(minimum) // width * width
+        width = _rounded_width((high - low) / count)
+        start = Fraction(low) // width * width
         edges = [float(start)]
 
-        while edges[-1] <= maximum:
+        while edges[-1] <= high:
             edges.append(float(start + len(edges) * width))
 
-        if any(lower == upper for lower, upper in pairwise(edges)):
-            return [minimum, maximum]
-
-        if all(
-            not any(edges[0] <= value < edges[1] for value in distribution._values)
-            for distribution in distributions
-        ):
-            return edges[1:]
-
         return edges
+
+    @classmethod
+    def _logarithmic_edges(
+        cls, ordered: Sequence[Sequence[float]], count: int, outside_share: float
+    ) -> Optional[List[float]]:
+        """Chooses edges of one ratio over the positive values.
+
+        The axis starts at the lowest held positive value and ends at the
+        highest held value; the outer edges are 1, 2 or 5 times a power of ten
+        beyond them, and the span between them holds about the bin count of
+        bins, whatever the outer rounding adds.
+
+        Args:
+            ordered (Sequence[Sequence[float]]): The values of every
+                distribution, sorted.
+            count (int): The number of bins to aim for.
+            outside_share (float): The share of each distribution's values
+                the axis may leave out on each side.
+
+        Returns:
+            Optional[List[float]]: The edges, or None when the positive values
+                hold fewer than two different values or the axis would hold a
+                single value.
+        """
+        positives = [[value for value in values if value > 0] for values in ordered]
+        present = [values for values in positives if values]
+
+        if not present or min(values[0] for values in present) == max(
+            values[-1] for values in present
+        ):
+            return None
+
+        low = min(cls._low_value(values, outside_share) for values in present)
+        high = max(cls._high_value(values, outside_share) for values in ordered)
+
+        if high <= low:
+            return None
+
+        first = max(number for number in cls._round_numbers(low) if number <= low)
+        last = min(number for number in cls._round_numbers(high) if number >= high)
+
+        lowest = float(first)
+        highest = float(last)
+        decades = math.log10(highest / lowest)
+        bin_count = max(1, round(count * decades / max(math.log10(high / low), 1)))
+        edges = [
+            lowest * (highest / lowest) ** (step / bin_count)
+            for step in range(bin_count + 1)
+        ]
+
+        return [lowest, *edges[1:-1], highest]
+
+    @staticmethod
+    def _round_numbers(value: float) -> List[Fraction]:
+        """Lists the numbers 1, 2 and 5 times a power of ten around a value.
+
+        Args:
+            value (float): A positive value.
+
+        Returns:
+            List[Fraction]: The round numbers from a tenth of the value's power
+                of ten to five times ten times it, exactly.
+        """
+        exponent = math.floor(math.log10(value))
+
+        return [
+            step * Fraction(10) ** power
+            for power in range(exponent - 1, exponent + 2)
+            for step in _ROUND_STEPS
+        ]
+
+    @staticmethod
+    def _crowding(
+        ordered: Sequence[Sequence[float]], edges: Sequence[float]
+    ) -> Tuple[int, float]:
+        """Measures how crowded the distributions look on a set of edges.
+
+        A distribution's drawn bars are its bins and an end bar on each side
+        that holds values; a bar is visible when it holds at least 2 percent of
+        what the distribution's tallest bar holds.
+
+        Args:
+            ordered (Sequence[Sequence[float]]): The values of every
+                distribution, sorted, at least one each.
+            edges (Sequence[float]): The edges.
+
+        Returns:
+            Tuple[int, float]: The fewest visible bars of a distribution, and
+                the largest share of a distribution's values in one bar.
+        """
+        fewest = sys.maxsize
+        most = 0.0
+
+        for values in ordered:
+            counts, below, above = Histogram._counted(values, edges)
+            bars = [count for count in (below, *counts, above) if count > 0]
+            tallest = max(bars)
+            visible = sum(1 for count in bars if count >= _VISIBLE_SHARE * tallest)
+            fewest = min(fewest, visible)
+            most = max(most, tallest / len(values))
+
+        return fewest, most
 
     def _quantile(self, fraction: float) -> float:
         return self._interpolated(sorted(self._values), fraction)
@@ -896,19 +1479,25 @@ class Distribution:
         return ordered[lower] * (1 - weight) + ordered[upper] * weight
 
     def __eq__(self, other: object) -> bool:
-        """Compares the Distribution with another one by its values and bins.
+        """Compares the Distribution with another one by its values and settings.
 
         Args:
             other (object): The object to compare against.
 
         Returns:
-            bool: True if both hold the same values in the same order and aim
-                for the same number of bins, otherwise False.
+            bool: True if both hold the same values in the same order, the same
+                bin settings, labels and arrangement, otherwise False.
         """
         if not isinstance(other, Distribution):
             return NotImplemented
 
-        return self._values == other._values and self._bin_count == other._bin_count
+        return (
+            self._values == other._values
+            and self._bins == other._bins
+            and self._value_label == other._value_label
+            and self._count_label == other._count_label
+            and self._arrangement == other._arrangement
+        )
 
     def __repr__(self) -> str:
         """Returns the string representation of the Distribution.
@@ -925,7 +1514,9 @@ class Histogram:
     Every bin holds the values from its lower edge up to, excluding, its upper
     edge; the last bin includes its upper edge. Values below the first edge and
     above the last are counted apart, so that nothing is lost silently. The
-    statistics describe every value, the ones outside the edges included.
+    statistics describe every value, the ones outside the edges included; a
+    histogram that counts values but carries no statistics withholds them.
+    Edges halfway between whole numbers are bins of whole numbers.
     """
 
     _edges: List[float]
@@ -933,6 +1524,10 @@ class Histogram:
     _below_count: int
     _above_count: int
     _statistics: Optional[Statistics]
+    _scale: Scale
+    _value_label: Optional[str]
+    _count_label: Optional[str]
+    _arrangement: Optional[Arrangement]
 
     def __init__(
         self,
@@ -942,12 +1537,16 @@ class Histogram:
         below_count: int = 0,
         above_count: int = 0,
         statistics: Optional[Statistics] = None,
+        scale: Scale = Scale.Linear,
+        value_label: Optional[str] = None,
+        count_label: Optional[str] = None,
+        arrangement: Optional[Arrangement] = None,
     ) -> None:
         """Initializes a histogram from its edges and counts.
 
         Args:
             edges (Iterable[float]): The bin edges, at least two, finite and
-                increasing.
+                increasing; above zero on a logarithmic scale.
             counts (Iterable[int]): One count per bin, so one fewer than the
                 edges.
             below_count (int): How many values lay below the first edge.
@@ -955,18 +1554,34 @@ class Histogram:
             above_count (int): How many values lay above the last edge.
                 Defaults to 0.
             statistics (Optional[Statistics]): The statistics of every value
-                counted, or None when there is none. Defaults to None.
+                counted, or None when there is no value or they are withheld.
+                Defaults to None.
+            scale (Scale): How the value axis is spaced. Defaults to
+                Scale.Linear.
+            value_label (Optional[str]): What the values measure, as the value
+                axis names it, such as "days", or None for no axis caption.
+                Defaults to None.
+            count_label (Optional[str]): What one counted value is, in the
+                plural, as the share axis and the legend name it, such as
+                "intervals", or None for "values". Defaults to None.
+            arrangement (Optional[Arrangement]): How a typeset report draws the
+                histograms of several keys, or None to choose it. Defaults to
+                None.
 
         Raises:
-            ValueError: If there are fewer than two edges, an edge is not finite
-                or not above the one before, the counts are not one per bin, or
-                a count is negative.
+            ValueError: If the counts are not one per bin, a count is negative,
+                or the scale is logarithmic and the first edge is not above
+                zero.
         """
         self._edges = self._checked_edges(edges)
         self._counts = list(counts)
         self._below_count = below_count
         self._above_count = above_count
         self._statistics = copy.copy(statistics)
+        self._scale = scale
+        self._value_label = value_label
+        self._count_label = count_label
+        self._arrangement = arrangement
 
         if len(self._counts) != len(self._edges) - 1:
             msg = "a histogram needs one count per bin"
@@ -976,14 +1591,36 @@ class Histogram:
             msg = "every count of a histogram must be zero or more"
             raise ValueError(msg)
 
+        if scale is Scale.Logarithmic and self._edges[0] <= 0:
+            msg = "the edges of a logarithmic histogram must be above zero"
+            raise ValueError(msg)
+
     @classmethod
-    def from_values(cls, values: Iterable[float], edges: Iterable[float]) -> Histogram:
+    def from_values(
+        cls,
+        values: Iterable[float],
+        edges: Iterable[float],
+        *,
+        scale: Scale = Scale.Linear,
+        value_label: Optional[str] = None,
+        count_label: Optional[str] = None,
+        arrangement: Optional[Arrangement] = None,
+    ) -> Histogram:
         """Counts values into bins over given edges.
 
         Args:
             values (Iterable[float]): The values to count, all finite.
             edges (Iterable[float]): The bin edges, at least two, finite and
-                increasing.
+                increasing; above zero on a logarithmic scale.
+            scale (Scale): How the value axis is spaced. Defaults to
+                Scale.Linear.
+            value_label (Optional[str]): What the values measure, or None for
+                no axis caption. Defaults to None.
+            count_label (Optional[str]): What one value is, in the plural, or
+                None for "values". Defaults to None.
+            arrangement (Optional[Arrangement]): How a typeset report draws the
+                histograms of several keys, or None to choose it. Defaults to
+                None.
 
         Returns:
             Histogram: The counts per bin, the counts outside the edges, and the
@@ -993,38 +1630,46 @@ class Histogram:
 
         if not materialized:
             bounds = cls._checked_edges(edges)
-            return cls(bounds, [0] * (len(bounds) - 1))
 
-        return cls._from_distribution(Distribution(materialized), edges)
+            return cls(
+                bounds,
+                [0] * (len(bounds) - 1),
+                scale=scale,
+                value_label=value_label,
+                count_label=count_label,
+                arrangement=arrangement,
+            )
+
+        distribution = Distribution(
+            materialized,
+            value_label=value_label,
+            count_label=count_label,
+            arrangement=arrangement,
+        )
+
+        return cls._from_distribution(distribution, edges, scale)
 
     @classmethod
     def _from_distribution(
-        cls, distribution: Distribution, edges: Iterable[float]
+        cls, distribution: Distribution, edges: Iterable[float], scale: Scale
     ) -> Histogram:
         """Counts the values of a distribution into bins over given edges.
 
         Args:
             distribution (Distribution): The values to count, with their
-                statistics.
+                statistics and labels.
             edges (Iterable[float]): The bin edges, at least two, finite and
                 increasing.
+            scale (Scale): How the value axis is spaced.
 
         Returns:
             Histogram: The counts per bin, the counts outside the edges, and the
-                statistics of the distribution.
+                statistics and labels of the distribution.
         """
         bounds = cls._checked_edges(edges)
-        counts = [0] * (len(bounds) - 1)
-        below_count = 0
-        above_count = 0
-
-        for value in distribution._values:
-            if value < bounds[0]:
-                below_count += 1
-            elif value > bounds[-1]:
-                above_count += 1
-            else:
-                counts[min(bisect_right(bounds, value), len(bounds) - 1) - 1] += 1
+        counts, below_count, above_count = cls._counted(
+            sorted(distribution._values), bounds
+        )
 
         return cls(
             bounds,
@@ -1032,7 +1677,31 @@ class Histogram:
             below_count=below_count,
             above_count=above_count,
             statistics=distribution.statistics,
+            scale=scale,
+            value_label=distribution._value_label,
+            count_label=distribution._count_label,
+            arrangement=distribution._arrangement,
         )
+
+    @staticmethod
+    def _counted(
+        ordered: Sequence[float], edges: Sequence[float]
+    ) -> Tuple[List[int], int, int]:
+        """Counts sorted values into bins over edges.
+
+        Args:
+            ordered (Sequence[float]): The values, sorted.
+            edges (Sequence[float]): The bin edges, at least two, increasing.
+
+        Returns:
+            Tuple[List[int], int, int]: The count per bin, the count below the
+                first edge and the count above the last.
+        """
+        positions = [bisect_left(ordered, edge) for edge in edges[:-1]]
+        positions.append(bisect_right(ordered, edges[-1]))
+        counts = [upper - lower for lower, upper in pairwise(positions)]
+
+        return counts, positions[0], len(ordered) - positions[-1]
 
     @staticmethod
     def _checked_edges(edges: Iterable[float]) -> List[float]:
@@ -1110,6 +1779,42 @@ class Histogram:
         return copy.copy(self._statistics)
 
     @property
+    def scale(self) -> Scale:
+        """How the value axis of the Histogram is spaced.
+
+        Returns:
+            Scale: The scale.
+        """
+        return self._scale
+
+    @property
+    def value_label(self) -> Optional[str]:
+        """What the values measure.
+
+        Returns:
+            Optional[str]: The caption of the value axis, or None.
+        """
+        return self._value_label
+
+    @property
+    def count_label(self) -> Optional[str]:
+        """What one counted value is, in the plural.
+
+        Returns:
+            Optional[str]: The noun of the share axis and the legend, or None.
+        """
+        return self._count_label
+
+    @property
+    def arrangement(self) -> Optional[Arrangement]:
+        """How a typeset report draws the histograms of several keys.
+
+        Returns:
+            Optional[Arrangement]: The arrangement, or None to choose it.
+        """
+        return self._arrangement
+
+    @property
     def count(self) -> int:
         """How many values were counted, the ones outside the edges included.
 
@@ -1154,8 +1859,8 @@ class Histogram:
             other (object): The object to compare against.
 
         Returns:
-            bool: True if both hold the same edges, counts, outside counts and
-                statistics, otherwise False.
+            bool: True if both hold the same edges, counts, outside counts,
+                statistics, scale, labels and arrangement, otherwise False.
         """
         if not isinstance(other, Histogram):
             return NotImplemented
@@ -1166,6 +1871,10 @@ class Histogram:
             and self._below_count == other._below_count
             and self._above_count == other._above_count
             and self._statistics == other._statistics
+            and self._scale == other._scale
+            and self._value_label == other._value_label
+            and self._count_label == other._count_label
+            and self._arrangement == other._arrangement
         )
 
     def __repr__(self) -> str:
@@ -1181,16 +1890,28 @@ class Counts:
     """How often every value of a set occurs, with the total the shares are of.
 
     The total is the number of values counted, which exceeds the sum of the
-    counts when only the most frequent values are listed. Values are told apart
-    the way a mapping tells its keys apart, and their order is part of the
-    Counts: two Counts listing the same values in a different order differ.
+    counts when only the most frequent values are listed; the values left out
+    are the remainder. Values are told apart the way a mapping tells its keys
+    apart, and their order is part of the Counts: two Counts listing the same
+    values in a different order differ.
     """
 
     _counts: Dict[Value, int]
     _total: int
+    _value_label: Optional[str]
+    _count_label: Optional[str]
+    _remainder_label: Optional[str]
+    _arrangement: Optional[Arrangement]
 
     def __init__(
-        self, counts: Mapping[Value, int], total: Optional[int] = None
+        self,
+        counts: Mapping[Value, int],
+        total: Optional[int] = None,
+        *,
+        value_label: Optional[str] = None,
+        count_label: Optional[str] = None,
+        remainder_label: Optional[str] = None,
+        arrangement: Optional[Arrangement] = None,
     ) -> None:
         """Initializes counts from a mapping of values to how often they occur.
 
@@ -1199,6 +1920,17 @@ class Counts:
                 order they are listed.
             total (Optional[int]): The number of values counted, or None for
                 the sum of the counts. Defaults to None.
+            value_label (Optional[str]): What the values are, as the category
+                axis names them, such as "diagnosis", or None for no caption.
+                Defaults to None.
+            count_label (Optional[str]): What one counted value is, in the
+                plural, as the share axis and the legend name it, such as
+                "patients", or None for "values". Defaults to None.
+            remainder_label (Optional[str]): What the values left out of the
+                listing are called in its last row, or None for "other values".
+                Defaults to None.
+            arrangement (Optional[Arrangement]): How a typeset report draws the
+                counts of several keys, or None to choose it. Defaults to None.
 
         Raises:
             ValueError: If a count is negative, or the total is below the sum of
@@ -1206,6 +1938,10 @@ class Counts:
         """
         self._counts = dict(counts)
         self._total = sum(self._counts.values()) if total is None else total
+        self._value_label = value_label
+        self._count_label = count_label
+        self._remainder_label = remainder_label
+        self._arrangement = arrangement
 
         if any(count < 0 for count in self._counts.values()):
             msg = "every count must be zero or more"
@@ -1233,6 +1969,42 @@ class Counts:
         """
         return self._total
 
+    @property
+    def value_label(self) -> Optional[str]:
+        """What the values are.
+
+        Returns:
+            Optional[str]: The caption of the category axis, or None.
+        """
+        return self._value_label
+
+    @property
+    def count_label(self) -> Optional[str]:
+        """What one counted value is, in the plural.
+
+        Returns:
+            Optional[str]: The noun of the share axis and the legend, or None.
+        """
+        return self._count_label
+
+    @property
+    def remainder_label(self) -> Optional[str]:
+        """What the values left out of the listing are called.
+
+        Returns:
+            Optional[str]: The label of the remainder, or None.
+        """
+        return self._remainder_label
+
+    @property
+    def arrangement(self) -> Optional[Arrangement]:
+        """How a typeset report draws the counts of several keys.
+
+        Returns:
+            Optional[Arrangement]: The arrangement, or None to choose it.
+        """
+        return self._arrangement
+
     def to_table(self) -> Table:
         """Converts the Counts to a table of values, counts and shares.
 
@@ -1241,7 +2013,7 @@ class Counts:
                 which is None when the total is zero; the share column carries
                 the share unit.
         """
-        rows: List[List[Value]] = [
+        rows: List[List[Cell]] = [
             [value, count, None if self._total == 0 else count / self._total]
             for value, count in self._counts.items()
         ]
@@ -1263,8 +2035,8 @@ class Counts:
             other (object): The object to compare against.
 
         Returns:
-            bool: True if both hold the same counts in the same order and the
-                same total, otherwise False.
+            bool: True if both hold the same counts in the same order, the same
+                total, labels and arrangement, otherwise False.
         """
         if not isinstance(other, Counts):
             return NotImplemented
@@ -1272,6 +2044,10 @@ class Counts:
         return (
             list(self._counts.items()) == list(other._counts.items())
             and self._total == other._total
+            and self._value_label == other._value_label
+            and self._count_label == other._count_label
+            and self._remainder_label == other._remainder_label
+            and self._arrangement == other._arrangement
         )
 
     def __repr__(self) -> str:
@@ -1283,9 +2059,194 @@ class Counts:
         return f"Counts({len(self._counts)} values of {self._total})"
 
 
+class Scatter:
+    """Points in a plane, each a pair of numbers, some of them labelled."""
+
+    _points: List[Tuple[float, float]]
+    _x_label: str
+    _y_label: str
+    _x_scale: Scale
+    _y_scale: Scale
+    _labels: Dict[int, str]
+    _diagonal: bool
+
+    def __init__(
+        self,
+        points: Sequence[Tuple[float, float]],
+        *,
+        x_label: str,
+        y_label: str,
+        x_scale: Scale = Scale.Linear,
+        y_scale: Scale = Scale.Linear,
+        labels: Optional[Mapping[int, str]] = None,
+        diagonal: bool = False,
+    ) -> None:
+        """Initializes a scatter from its points.
+
+        Args:
+            points (Sequence[Tuple[float, float]]): The points, each as its
+                position on the horizontal and on the vertical axis, all
+                finite.
+            x_label (str): What the horizontal axis measures.
+            y_label (str): What the vertical axis measures.
+            x_scale (Scale): How the horizontal axis is spaced. Defaults to
+                Scale.Linear.
+            y_scale (Scale): How the vertical axis is spaced. Defaults to
+                Scale.Linear.
+            labels (Optional[Mapping[int, str]]): The text printed beside a
+                point, by the point's position in the points, for the points
+                that have one. Defaults to None.
+            diagonal (bool): Whether the line where both coordinates are equal
+                is drawn. Defaults to False.
+
+        Raises:
+            ValueError: If a coordinate is not finite, or a label names a
+                position the points do not have.
+        """
+        self._points = [(float(x), float(y)) for x, y in points]
+        self._x_label = x_label
+        self._y_label = y_label
+        self._x_scale = x_scale
+        self._y_scale = y_scale
+        self._labels = {} if labels is None else dict(labels)
+        self._diagonal = diagonal
+
+        if not all(math.isfinite(x) and math.isfinite(y) for x, y in self._points):
+            msg = "every coordinate of a scatter must be finite"
+            raise ValueError(msg)
+
+        for index in self._labels:
+            if not 0 <= index < len(self._points):
+                msg = (
+                    f"a label names the point {index}, which the scatter does not have"
+                )
+                raise ValueError(msg)
+
+    @property
+    def points(self) -> List[Tuple[float, float]]:
+        """The points of the Scatter.
+
+        Returns:
+            List[Tuple[float, float]]: Every point, in the order given.
+        """
+        return list(self._points)
+
+    @property
+    def x_label(self) -> str:
+        """What the horizontal axis measures.
+
+        Returns:
+            str: The caption of the horizontal axis.
+        """
+        return self._x_label
+
+    @property
+    def y_label(self) -> str:
+        """What the vertical axis measures.
+
+        Returns:
+            str: The caption of the vertical axis.
+        """
+        return self._y_label
+
+    @property
+    def x_scale(self) -> Scale:
+        """How the horizontal axis is spaced.
+
+        Returns:
+            Scale: The scale of the horizontal axis.
+        """
+        return self._x_scale
+
+    @property
+    def y_scale(self) -> Scale:
+        """How the vertical axis is spaced.
+
+        Returns:
+            Scale: The scale of the vertical axis.
+        """
+        return self._y_scale
+
+    @property
+    def labels(self) -> Dict[int, str]:
+        """The text printed beside the labelled points.
+
+        Returns:
+            Dict[int, str]: The label by the point's position in the points.
+        """
+        return dict(self._labels)
+
+    @property
+    def diagonal(self) -> bool:
+        """Whether the line where both coordinates are equal is drawn.
+
+        Returns:
+            bool: True if the line is drawn, otherwise False.
+        """
+        return self._diagonal
+
+    def to_polars(self) -> pl.DataFrame:
+        """Converts the points to a Polars DataFrame.
+
+        Returns:
+            pl.DataFrame: One row per point with its two coordinates and its
+                label, which is None for a point without one.
+        """
+        return pl.DataFrame(
+            {
+                "x": [x for x, _ in self._points],
+                "y": [y for _, y in self._points],
+                "label": [
+                    self._labels.get(index) for index in range(len(self._points))
+                ],
+            },
+            schema={"x": pl.Float64, "y": pl.Float64, "label": pl.String},
+        )
+
+    def __eq__(self, other: object) -> bool:
+        """Compares the Scatter with another one by its contents.
+
+        Args:
+            other (object): The object to compare against.
+
+        Returns:
+            bool: True if both hold the same points in the same order, the same
+                axis labels and scales, the same point labels and the same
+                diagonal, otherwise False.
+        """
+        if not isinstance(other, Scatter):
+            return NotImplemented
+
+        return (
+            self._points == other._points
+            and self._x_label == other._x_label
+            and self._y_label == other._y_label
+            and self._x_scale == other._x_scale
+            and self._y_scale == other._y_scale
+            and self._labels == other._labels
+            and self._diagonal == other._diagonal
+        )
+
+    def __repr__(self) -> str:
+        """Returns the string representation of the Scatter.
+
+        Returns:
+            str: The number of points and labels of the Scatter.
+        """
+        return f"Scatter({len(self._points)} points, {len(self._labels)} labelled)"
+
+
 #: A type alias for the value kinds an analytic can report.
 ReportValue: TypeAlias = Union[
-    "Value", Table, Plot, Measurement, Assessment, Distribution, Histogram, Counts
+    "Value",
+    Table,
+    Plot,
+    Measurement,
+    Assessment,
+    Distribution,
+    Histogram,
+    Counts,
+    Scatter,
 ]
 
 #: A type alias for one parameter or summary item: a value or a sequence of values.
@@ -1357,6 +2318,25 @@ class Derivation(ABC, Generic[InputsType, DerivedType]):
 
         Returns:
             Mapping[str, Detail]: The parameters by name; empty unless overridden.
+        """
+        return {}
+
+    def titles(
+        self, inputs: InputsType, derived: DerivedType, /
+    ) -> Mapping[Value, str]:
+        """Names the keys of what the derivation derives, for the groups per key.
+
+        A run calls it once after every derive whose keys head a group of their
+        own, as a group placed over each key has. A key without a title is
+        headed by itself; a title for a key that was not derived is ignored.
+        Titles that fail fail the derivation.
+
+        Args:
+            inputs (InputsType): The inputs the derivation ran on.
+            derived (DerivedType): What derive returned.
+
+        Returns:
+            Mapping[Value, str]: The heading by key; empty unless overridden.
         """
         return {}
 

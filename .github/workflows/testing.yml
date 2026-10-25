@@ -26,6 +26,9 @@ jobs:
         run: |
           uv sync --group tests
 
+      - name: Download Typst packages
+        run: uv run python scripts/fetch_typst_packages.py
+
       - name: Run tests
         run: |
           uv run pytest -W error

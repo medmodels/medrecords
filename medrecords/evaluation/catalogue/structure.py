@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Dict, Generic, List, Mapping, Optional
 
 from graphrecords import EdgeEndpointRole
 
-from medrecords.evaluation.analytic import Analytic, Distribution, Table
+from medrecords.evaluation.analytic import Analytic, Bins, Distribution, Table
 from medrecords.evaluation.catalogue.attributes import IndexType
 from medrecords.evaluation.results import read, read_pairs
 from medrecords.medrecord import MedRecord
@@ -83,12 +83,15 @@ class EdgesPerNode(Analytic[MedRecord, Distribution]):
     _nodes: querying.NodesExpression
     _edges: querying.EdgesExpression
     _role: EdgeEndpointRole
+    _bins: Optional[Bins]
 
     def __init__(
         self,
         nodes: querying.NodesExpression,
         edges: querying.EdgesExpression,
         role: EdgeEndpointRole,
+        *,
+        bins: Optional[Bins] = None,
     ) -> None:
         """Initializes a count of edges per node.
 
@@ -97,10 +100,13 @@ class EdgesPerNode(Analytic[MedRecord, Distribution]):
             edges (querying.EdgesExpression): The edges counted.
             role (EdgeEndpointRole): Whether a node takes part as the source or
                 the target of an edge.
+            bins (Optional[Bins]): How the histogram of the counts chooses its
+                bins, or None to choose every setting. Defaults to None.
         """
         self._nodes = nodes
         self._edges = edges
         self._role = role
+        self._bins = bins
 
     def compute(self, medrecord: MedRecord) -> Distribution:
         """Counts the edges per node.
@@ -126,7 +132,8 @@ class EdgesPerNode(Analytic[MedRecord, Distribution]):
         total = read(members.count().evaluate(), int)
 
         return Distribution(
-            [count for _, count in counts] + [0] * (total - len(counts))
+            [count for _, count in counts] + [0] * (total - len(counts)),
+            bins=self._bins,
         )
 
     def description(self) -> Optional[str]:
@@ -135,7 +142,7 @@ class EdgesPerNode(Analytic[MedRecord, Distribution]):
         Returns:
             Optional[str]: The text under the heading.
         """
-        return "Nodes without any edge count as zero."
+        return "Those with none are counted as zero."
 
     def parameters(self) -> Mapping[str, Detail]:
         """Records the role.

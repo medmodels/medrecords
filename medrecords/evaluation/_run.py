@@ -39,10 +39,10 @@ if TYPE_CHECKING:
         Derivation,
         DerivedType,
         Detail,
+        EntryPath,
         InputsType,
         ReportValue,
     )
-    from medrecords.evaluation.entry import EntryPath
     from medrecords.evaluation.group import EvaluationGroup
 
 
@@ -96,6 +96,7 @@ class Run:
         self,
         name: str,
         description: Optional[str],
+        parameters: Mapping[str, Detail],
         group: EvaluationGroup[InputsType],
         inputs: InputsType,
     ) -> Report:
@@ -107,6 +108,8 @@ class Run:
         Args:
             name (str): The name of the evaluation; the name of the report.
             description (Optional[str]): The text under the name of the report.
+            parameters (Mapping[str, Detail]): What the evaluation was
+                configured with.
             group (EvaluationGroup[InputsType]): The group to run.
             inputs (InputsType): What the analytics run on.
 
@@ -127,6 +130,7 @@ class Run:
             filled.entries,
             started_at,
             timedelta(seconds=perf_counter() - clock),
+            parameters=parameters,
         )
 
     def _analytic(
@@ -339,6 +343,86 @@ class Run:
             parameters, summary, timedelta(seconds=perf_counter() - started), None
         )
         return completed, derived
+
+    def _keyed_derivation(
+        self,
+        derivation: Derivation[InputsType, Mapping[Value, DerivedType]],
+        inputs: InputsType,
+    ) -> Tuple[
+        DerivationEntry, Union[Mapping[Value, DerivedType], Failure], Dict[Value, str]
+    ]:
+        """Runs a derivation by key and asks it for the titles of its keys.
+
+        Titles that fail fail the derivation.
+
+        Args:
+            derivation (Derivation[InputsType, Mapping[Value, DerivedType]]): The
+                derivation to run.
+            inputs (InputsType): What the derivation runs on.
+
+        Returns:
+            Tuple[DerivationEntry, Union[Mapping[Value, DerivedType], Failure],
+                Dict[Value, str]]: The recorded run, the derived inputs by key
+                or the failure the derivation ended with, and the title of every
+                key that has one.
+        """
+        recorded, derived = self._derivation(derivation, inputs)
+
+        if isinstance(derived, Failure):
+            return recorded, derived, {}
+
+        try:
+            titles = dict(derivation.titles(inputs, derived))
+        except Exception as error:
+            failure = Failure._from_exception(error)
+            self._fail(error)
+            failed = DerivationEntry(
+                recorded.parameters, {}, recorded.duration, failure
+            )
+            return failed, failure, {}
+
+        return recorded, derived, titles
+
+    def _keyed_derivations(
+        self,
+        derivation: Derivation[InputsType, Mapping[Value, DerivedType]],
+        inputs_by_key: Mapping[Value, InputsType],
+    ) -> Tuple[
+        Dict[Value, DerivationEntry],
+        Dict[Value, Mapping[Value, DerivedType]],
+        Dict[Value, str],
+    ]:
+        """Runs a derivation by key under every key and collects the titles.
+
+        A key whose derivation fails is recorded and left out of the derived
+        inputs. A child key takes the first title any key's run gives it.
+
+        Args:
+            derivation (Derivation[InputsType, Mapping[Value, DerivedType]]): The
+                derivation to run.
+            inputs_by_key (Mapping[Value, InputsType]): What the derivation runs
+                on, by key.
+
+        Returns:
+            Tuple[Dict[Value, DerivationEntry], Dict[Value, Mapping[Value,
+                DerivedType]], Dict[Value, str]]: The derivation entries by
+                key, the derived inputs of the keys that completed, and the
+                title of every child key that has one.
+        """
+        derivations: Dict[Value, DerivationEntry] = {}
+        derived: Dict[Value, Mapping[Value, DerivedType]] = {}
+        titles: Dict[Value, str] = {}
+
+        for key, inputs in inputs_by_key.items():
+            entry, inner, inner_titles = self._keyed_derivation(derivation, inputs)
+            derivations[key] = entry
+
+            if not isinstance(inner, Failure):
+                derived[key] = inner
+
+            titles = {**inner_titles, **titles}
+
+        return derivations, derived, titles
 
     def _derivations(
         self,
