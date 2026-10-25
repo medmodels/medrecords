@@ -24,7 +24,6 @@ from medrecords.evaluation.entry import (
     DerivationEntry,
     Failure,
     GroupEntry,
-    InputEntry,
     KeyedAnalyticEntry,
     KeyedGroupEntry,
     Layout,
@@ -259,14 +258,11 @@ class _NestedGroupMember(_InputsMember[InputsType], Generic[InputsType, DerivedT
     def _owns(self, steps: Tuple[_Step, ...]) -> bool:
         return not steps or self._group._owns(steps)
 
-    def _unfilled(
-        self, inputs: object, derivation: Optional[DerivationEntry]
-    ) -> GroupEntry:
+    def _unfilled(self, derivation: Optional[DerivationEntry]) -> GroupEntry:
         return GroupEntry(
             self._step._name,
             self._title,
             self._description,
-            InputEntry._from_inputs(inputs),
             derivation,
             [],
             layout=self._layout,
@@ -298,7 +294,7 @@ class _GroupMember(_NestedGroupMember[InputsType, InputsType]):
 
     def _entry(self, run: Run, inputs: InputsType, path: EntryPath) -> GroupEntry:
         return self._group._filled(
-            run, inputs, (*path, self._step._name), self._unfilled(inputs, None)
+            run, inputs, (*path, self._step._name), self._unfilled(None)
         )
 
     def _entry_across(
@@ -308,7 +304,6 @@ class _GroupMember(_NestedGroupMember[InputsType, InputsType]):
             self._step._name,
             self._title,
             self._description,
-            InputEntry._from_inputs(inputs_by_key),
             {},
             self._group._entries_across(run, inputs_by_key, (*path, self._step._name)),
             layout=self._layout,
@@ -348,10 +343,10 @@ class _GroupOverMember(_NestedGroupMember[InputsType, DerivedType]):
         derivation, derived = run._derivation(self._derivation, inputs)
 
         if isinstance(derived, Failure):
-            return self._unfilled(inputs, derivation)
+            return self._unfilled(derivation)
 
         return self._group._filled(
-            run, derived, (*path, self._step._name), self._unfilled(derived, derivation)
+            run, derived, (*path, self._step._name), self._unfilled(derivation)
         )
 
     def _entry_across(
@@ -363,7 +358,6 @@ class _GroupOverMember(_NestedGroupMember[InputsType, DerivedType]):
             self._step._name,
             self._title,
             self._description,
-            InputEntry._from_inputs(derived),
             derivations,
             self._group._entries_across(run, derived, (*path, self._step._name)),
             layout=self._layout,
@@ -436,7 +430,6 @@ class _KeyedGroupMember(_NestedGroupMember[InputsType, DerivedType]):
                 child_key,
                 titles.get(child_key, str(child_key)),
                 None,
-                InputEntry._from_inputs(inputs_of_child),
                 {},
                 self._group._entries_across(
                     run, inputs_of_child, (*child_path, child_key)
@@ -449,7 +442,6 @@ class _KeyedGroupMember(_NestedGroupMember[InputsType, DerivedType]):
             self._step._name,
             self._title,
             self._description,
-            InputEntry._from_inputs(inputs_by_key),
             derivations,
             entries,
             layout=self._layout,
@@ -502,7 +494,7 @@ class _GroupOverEachMember(_KeyedGroupMember[InputsType, DerivedType]):
         derivation, derived, titles = run._keyed_derivation(self._derivation, inputs)
 
         if isinstance(derived, Failure):
-            return self._unfilled(inputs, derivation)
+            return self._unfilled(derivation)
 
         child_path = (*path, self._step._name)
         entries: List[Entry] = [
@@ -514,14 +506,13 @@ class _GroupOverEachMember(_KeyedGroupMember[InputsType, DerivedType]):
                     key,
                     titles.get(key, str(key)),
                     None,
-                    InputEntry._from_inputs(inner),
                     None,
                     [],
                 ),
             )
             for key, inner in derived.items()
         ]
-        entry = self._unfilled(inputs, derivation)
+        entry = self._unfilled(derivation)
 
         return entry._with_entries(entries)
 
@@ -558,9 +549,9 @@ class _GroupAcrossMember(_KeyedGroupMember[InputsType, DerivedType]):
         derivation, derived = run._derivation(self._derivation, inputs)
 
         if isinstance(derived, Failure):
-            return self._unfilled(inputs, derivation)
+            return self._unfilled(derivation)
 
-        entry = self._unfilled(derived, derivation)
+        entry = self._unfilled(derivation)
 
         return entry._with_entries(
             self._group._entries_across(run, derived, (*path, self._step._name))

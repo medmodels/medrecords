@@ -13,7 +13,7 @@
   line: rgb("#E2E8F0"),
   axis: rgb("#94A3B8"),
   alert: rgb("#B91C1C"),
-  series: (rgb("#0077B6"), rgb("#C2410C"), rgb("#7C3AED"), rgb("#16A34A"), rgb("#BE185D")),
+  series: (rgb("#0077B6"), rgb("#03045E"), rgb("#00B4D8")),
 )
 
 #let size = (
@@ -38,7 +38,6 @@
 #let width = (
   value: 4cm,
   check: 5cm,
-  cell: 6cm,
   wordmark: 6cm,
   running-wordmark: 2.4cm,
 )
@@ -59,14 +58,15 @@
   down: 0.6em,
 )
 
-// The measures of the charts: plot heights, the gap before an end bar and its narrowest
-// slot, ticks, the room a label keeps to its neighbours, step lines, panels, bars of counts,
-// the widest share of the width the category labels take, scatter points and plots.
+// The measures of the charts: plot heights, ticks and the paddings of their labels and
+// of the axis captions, step lines, panels, bars of counts, the widest share of the width
+// the category labels take, scatter points and plots.
 #let chart = (
-  height: 96pt,
+  height: 140pt,
   tallest: 420pt,
   tick: 3pt,
-  label-gap: 4pt,
+  tick-pad: 4pt,
+  label-pad: 6pt,
   step: 1.4pt,
   panel: 80pt,
   panel-height: 64pt,
@@ -77,13 +77,8 @@
   categories: 40%,
   point: 6pt,
   scatter: 7cm,
-  zero-margin: 2,
   legend-row: 3,
-  short-label: 4,
 )
-
-// At most this many keys are overlaid in one chart unless an arrangement says otherwise.
-#let overlaid-keys = 3
 
 #let numbered-levels = 3
 
@@ -102,15 +97,6 @@
 
 // Integers group their digits from this many digits on.
 #let grouped-from = 5
-
-// Widths of bins (ratios on a logarithmic scale) closer than this relative amount are equal.
-#let even-tolerance = 1e-9
-
-#let longest-word = 25
-
-#let longest-cell = 40
-
-#let word-piece = 12
 
 #let seconds-per = (
   microsecond: 0.000001,

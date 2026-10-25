@@ -38,7 +38,7 @@ def read(
     """Reads an evaluated result, as a kind if one is given.
 
     A failure the query engine handed back is raised. An integer is read as
-    a number; a boolean is neither an integer nor a number.
+    a number and stays an integer; a boolean is neither an integer nor a number.
 
     Args:
         result (Union[Value, QueryError]): The evaluated result.
@@ -58,7 +58,7 @@ def read(
         return result
 
     if kind is float and isinstance(result, int) and not isinstance(result, bool):
-        return float(result)
+        return result
 
     if isinstance(result, bool) and kind is not bool:
         msg = f"expected {kind.__name__}, got {result!r}"

@@ -6,7 +6,7 @@ from datetime import timedelta
 
 import pytest
 
-from medrecords.evaluation._json import JsonObject, encode_distribution
+from medrecords.evaluation._json import JsonObject
 from medrecords.evaluation.analytic import (
     Assessment,
     Bins,
@@ -21,7 +21,6 @@ from medrecords.evaluation.entry import (
     DerivationEntry,
     Failure,
     GroupEntry,
-    InputEntry,
     KeyedAnalyticEntry,
     KeyedGroupEntry,
     KeyedResult,
@@ -36,7 +35,6 @@ from ._fixtures import (
     create_keyed_analytic_entry,
     create_keyed_group_entry,
     create_keyed_result,
-    create_medrecord,
     create_report,
     create_rich_report,
 )
@@ -86,52 +84,6 @@ class TestFailure(unittest.TestCase):
 
     def test_repr(self) -> None:
         assert repr(create_failure()) == "Failure(builtins.ValueError: sit)"
-
-
-class TestInputEntry(unittest.TestCase):
-    def test_init(self) -> None:
-        entry = InputEntry("real", 3, 2)
-
-        assert entry.name == "real"
-        assert entry.node_count == 3
-        assert entry.edge_count == 2
-
-    def test_from_inputs(self) -> None:
-        medrecord = create_medrecord()
-
-        assert InputEntry._from_inputs(medrecord) == [InputEntry("medrecord", 3, 2)]
-        assert InputEntry._from_inputs(
-            {"real": medrecord, "synthetics": {"a": medrecord}, "limit": 1}
-        ) == [InputEntry("real", 3, 2), InputEntry("synthetics.a", 3, 2)]
-        assert InputEntry._from_inputs([medrecord, [medrecord]]) == [
-            InputEntry("0", 3, 2),
-            InputEntry("1.0", 3, 2),
-        ]
-        assert InputEntry._from_inputs("lorem") == []
-        assert InputEntry._from_inputs(b"lorem") == []
-        assert InputEntry._from_inputs(1) == []
-
-    def test_from_document(self) -> None:
-        document = create_object(InputEntry("real", 3, 2)._to_document())
-
-        assert InputEntry._from_document(document) == InputEntry("real", 3, 2)
-
-    def test_to_document(self) -> None:
-        assert InputEntry("real", 3, 2)._to_document() == {
-            "name": "real",
-            "node_count": 3,
-            "edge_count": 2,
-        }
-
-    def test_eq(self) -> None:
-        assert InputEntry("real", 3, 2) == InputEntry("real", 3, 2)
-        assert InputEntry("real", 3, 2) != InputEntry("real", 3, 1)
-        assert InputEntry("real", 3, 2) != "real"
-
-    def test_repr(self) -> None:
-        assert repr(InputEntry("medrecord", 3, 2)) == (
-            "InputEntry('medrecord', node_count=3, edge_count=2)"
-        )
 
 
 class TestDerivationEntry(unittest.TestCase):
@@ -273,14 +225,14 @@ class TestAnalyticEntry(unittest.TestCase):
             )
 
         with pytest.raises(
-            ValueError, match=re.escape("expected a unit at sit.result.unit")
+            ValueError, match=re.escape("expected a value of Unit at sit.result.unit")
         ):
             AnalyticEntry._from_document(
                 create_object({**analytic, "result": measurement})
             )
 
         with pytest.raises(
-            ValueError, match=re.escape("expected a unit at sit.result.unit")
+            ValueError, match=re.escape("expected a value of Unit at sit.result.unit")
         ):
             AnalyticEntry._from_document(
                 create_object({**analytic, "result": assessment})
@@ -303,6 +255,7 @@ class TestAnalyticEntry(unittest.TestCase):
             "headings": ["amet", 2024],
             "rows": [[1, 0.5]],
             "units": [None, "share"],
+            "printed_rows": None,
         }
 
     def test_result(self) -> None:
@@ -327,23 +280,20 @@ class TestGroupEntry(unittest.TestCase):
         assert entry.name == "sit"
         assert entry.title == "sit"
         assert entry.description == "adipiscing"
-        assert entry.inputs == [InputEntry("medrecord", 3, 2)]
         assert entry.derivation == create_derivation_entry()
         assert len(entry.entries) == 2
         assert entry.layout is Layout.Section
         assert (
-            GroupEntry("sit", "sit", None, [], None, [], layout=Layout.Inline).layout
+            GroupEntry("sit", "sit", None, None, [], layout=Layout.Inline).layout
             is Layout.Inline
         )
 
-        entry.inputs.clear()
         entry.entries.clear()
 
-        assert len(entry.inputs) == 1
         assert len(entry.entries) == 2
 
     def test_from_document(self) -> None:
-        appendix = GroupEntry("sit", "sit", None, [], None, [], layout=Layout.Appendix)
+        appendix = GroupEntry("sit", "sit", None, None, [], layout=Layout.Appendix)
 
         for entry in (create_group_entry(), create_report().group("across"), appendix):
             document = create_object(entry._to_document())
@@ -369,7 +319,6 @@ class TestGroupEntry(unittest.TestCase):
         assert document["title"] == "sit"
         assert document["description"] == "adipiscing"
         assert document["layout"] == "section"
-        assert document["inputs"] == [InputEntry("medrecord", 3, 2)._to_document()]
         assert document["derivation"] == create_derivation_entry()._to_document()
         assert document["entries"] == [
             entry._to_document() for entry in create_group_entry().entries
@@ -384,12 +333,11 @@ class TestGroupEntry(unittest.TestCase):
         assert emptied.name == "sit"
         assert emptied.title == "sit"
         assert emptied.description == "adipiscing"
-        assert emptied.inputs == entry.inputs
         assert emptied.derivation == entry.derivation
         assert len(entry.entries) == 2
         assert entry._with_entries(entry.entries) == entry
         assert (
-            GroupEntry("sit", "sit", None, [], None, [], layout=Layout.Inline)
+            GroupEntry("sit", "sit", None, None, [], layout=Layout.Inline)
             ._with_entries([])
             .layout
             is Layout.Inline
@@ -450,12 +398,10 @@ class TestGroupEntry(unittest.TestCase):
 
     def test_eq(self) -> None:
         assert create_group_entry() == create_group_entry()
-        assert create_group_entry() != GroupEntry("sit", "sit", None, [], None, [])
-        assert create_group_entry() != GroupEntry(
-            "sit", "sit", None, create_group_entry().inputs, None, []
-        )
-        assert GroupEntry("sit", "sit", None, [], None, []) != GroupEntry(
-            "sit", "sit", None, [], None, [], layout=Layout.Inline
+        assert create_group_entry() != GroupEntry("sit", "sit", None, None, [])
+        assert create_group_entry() != GroupEntry("sit", "sit", None, None, [])
+        assert GroupEntry("sit", "sit", None, None, []) != GroupEntry(
+            "sit", "sit", None, None, [], layout=Layout.Inline
         )
         assert create_group_entry() != "sit"
 
@@ -558,11 +504,11 @@ class TestKeyedAnalyticEntry(unittest.TestCase):
 
         histograms = Distribution.shared_histograms(distributions)
         assert [keyed["result"] for keyed in shared["results"]] == [
-            encode_distribution(distributions[0], histograms[0]),
-            encode_distribution(distributions[1], histograms[1]),
+            distributions[0]._to_document(histograms[0]),
+            distributions[1]._to_document(histograms[1]),
         ]
-        assert partial["results"][0]["result"] == encode_distribution(
-            distributions[0], distributions[0].histogram()
+        assert partial["results"][0]["result"] == distributions[0]._to_document(
+            distributions[0].histogram()
         )
         assert partial["results"][1]["result"] == create_failure()._to_document()
 
@@ -578,8 +524,8 @@ class TestKeyedAnalyticEntry(unittest.TestCase):
         )._to_document()
 
         assert [keyed["result"] for keyed in separate["results"]] == [
-            encode_distribution(disagreeing[0], disagreeing[0].histogram()),
-            encode_distribution(disagreeing[1], disagreeing[1].histogram()),
+            disagreeing[0]._to_document(disagreeing[0].histogram()),
+            disagreeing[1]._to_document(disagreeing[1].histogram()),
         ]
 
     def test_result(self) -> None:
@@ -613,30 +559,25 @@ class TestKeyedGroupEntry(unittest.TestCase):
         assert entry.name == "sit"
         assert entry.title == "sit"
         assert entry.description == "adipiscing"
-        assert entry.inputs == [InputEntry("real", 3, 2), InputEntry("synthetic", 2, 1)]
         assert entry.derivations["real"] == create_derivation_entry()
         assert entry.derivations["synthetic"].failure == create_failure()
         assert list(entry.derivations) == ["real", "synthetic"]
         assert len(entry.entries) == 2
         assert entry.layout is Layout.Section
         assert (
-            KeyedGroupEntry(
-                "sit", "sit", None, [], {}, [], layout=Layout.Appendix
-            ).layout
+            KeyedGroupEntry("sit", "sit", None, {}, [], layout=Layout.Appendix).layout
             is Layout.Appendix
         )
 
-        entry.inputs.clear()
         entry.derivations.clear()
         entry.entries.clear()
 
-        assert len(entry.inputs) == 2
         assert len(entry.derivations) == 2
         assert len(entry.entries) == 2
 
     def test_from_document(self) -> None:
         document = create_object(create_keyed_group_entry()._to_document())
-        inline = KeyedGroupEntry("sit", "sit", None, [], {}, [], layout=Layout.Inline)
+        inline = KeyedGroupEntry("sit", "sit", None, {}, [], layout=Layout.Inline)
 
         assert KeyedGroupEntry._from_document(document) == create_keyed_group_entry()
         assert (
@@ -676,10 +617,6 @@ class TestKeyedGroupEntry(unittest.TestCase):
         assert document["title"] == "sit"
         assert document["description"] == "adipiscing"
         assert document["layout"] == "section"
-        assert document["inputs"] == [
-            InputEntry("real", 3, 2)._to_document(),
-            InputEntry("synthetic", 2, 1)._to_document(),
-        ]
         assert document["derivations"] == [
             {"key": "real", "derivation": create_derivation_entry()._to_document()},
             {
@@ -717,19 +654,16 @@ class TestKeyedGroupEntry(unittest.TestCase):
 
     def test_eq(self) -> None:
         assert create_keyed_group_entry() == create_keyed_group_entry()
-        assert create_keyed_group_entry() != KeyedGroupEntry(
-            "sit", "sit", None, [], {}, []
-        )
+        assert create_keyed_group_entry() != KeyedGroupEntry("sit", "sit", None, {}, [])
         assert create_keyed_group_entry() != KeyedGroupEntry(
             "sit",
             "sit",
             "adipiscing",
-            create_keyed_group_entry().inputs,
             {},
             create_keyed_group_entry().entries,
         )
-        assert KeyedGroupEntry("sit", "sit", None, [], {}, []) != KeyedGroupEntry(
-            "sit", "sit", None, [], {}, [], layout=Layout.Inline
+        assert KeyedGroupEntry("sit", "sit", None, {}, []) != KeyedGroupEntry(
+            "sit", "sit", None, {}, [], layout=Layout.Inline
         )
         assert create_keyed_group_entry() != "sit"
 

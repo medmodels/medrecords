@@ -50,6 +50,7 @@ COMPLETE = _Step("complete", _Shape.Plain)
 INSIDE = _Step("inside", _Shape.Each)
 AGAIN = _Step("again", _Shape.Across)
 MISSING = _Step("missing", _Shape.Plain)
+SPARSE = _Step("sparse", _Shape.Plain)
 
 
 def create_failure(message: str = "consectetur") -> Failure:
@@ -83,7 +84,7 @@ def create_group(
     entries: Sequence[Entry],
     derivation: Optional[DerivationEntry] = None,
 ) -> GroupEntry:
-    return GroupEntry(name, str(name), None, [], derivation, entries)
+    return GroupEntry(name, str(name), None, derivation, entries)
 
 
 def create_keyed_group(
@@ -91,7 +92,7 @@ def create_keyed_group(
     entries: Sequence[Union[KeyedAnalyticEntry, KeyedGroupEntry]],
     derivations: Optional[Mapping[Value, DerivationEntry]] = None,
 ) -> KeyedGroupEntry:
-    return KeyedGroupEntry(name, str(name), None, [], derivations or {}, entries)
+    return KeyedGroupEntry(name, str(name), None, derivations or {}, entries)
 
 
 def create_across_entries() -> List[Union[KeyedAnalyticEntry, KeyedGroupEntry]]:
@@ -121,6 +122,11 @@ def create_across_entries() -> List[Union[KeyedAnalyticEntry, KeyedGroupEntry]]:
         create_keyed_group(
             "again",
             [create_keyed_group("x", [create_keyed("count", {"a": 5, "b": 6})])],
+        ),
+        create_keyed_group(
+            "sparse",
+            [create_keyed("count", {"a": 1})],
+            {"a": create_derivation({"kept": 1}), "b": create_derivation({"kept": 0})},
         ),
     ]
 
@@ -189,7 +195,6 @@ class TestFindings(unittest.TestCase):
         assert findings[create_placement(DERIVED, COUNT)] == 2
         assert findings[create_placement(EACH, COUNT)] == {"a": 1, "b": 2}
         assert findings[create_placement(ACROSS, COUNT)] == {"a": 1, "b": 2}
-        assert findings[create_placement(ACROSS, INNER, COUNT)] == {"a": 1}
         assert findings[create_placement(ACROSS, INSIDE, COUNT)] == {
             "a": {"x": 1, "y": 3},
             "b": {"x": 2, "y": 4},
@@ -247,20 +252,26 @@ class TestFindings(unittest.TestCase):
         ):
             findings[create_placement(ACROSS, INSIDE)]
 
+        with pytest.raises(NoResultError, match="across / inner / b failed: elit"):
+            findings[create_placement(ACROSS, INNER, COUNT)]
+
         with pytest.raises(
-            NoResultError, match="across / inner / missing is not in the findings"
+            NoResultError, match="across / inside / x / missing is not in the findings"
         ):
-            findings[create_placement(ACROSS, INNER, MISSING)]
+            findings[create_placement(ACROSS, INSIDE, MISSING)]
 
         keyed = create_findings(create_across_entries(), key="b")
 
         with pytest.raises(NoResultError, match="partial failed: adipiscing"):
             keyed[create_placement(PARTIAL)]
 
-        with pytest.raises(
-            NoResultError, match="inner / count was not computed under 'b'"
-        ):
+        with pytest.raises(NoResultError, match="inner failed: elit"):
             keyed[create_placement(INNER, COUNT)]
+
+        with pytest.raises(
+            NoResultError, match="sparse / count was not computed under 'b'"
+        ):
+            keyed[create_placement(SPARSE, COUNT)]
 
         group, _ = EvaluationGroup[MedRecord]().place_analytic("count", NodeCount())
         _, foreign = EvaluationGroup[MedRecord]().place_analytic("count", NodeCount())
@@ -358,6 +369,7 @@ class TestFindings(unittest.TestCase):
             (("across", "inside", "y", "count", "b"), 4),
             (("across", "again", "x", "count", "a"), 5),
             (("across", "again", "x", "count", "b"), 6),
+            (("across", "sparse", "count", "a"), 1),
         ]
         assert list(findings.each(Assessment)) == [
             (("nested", "check"), Assessment(1, "at least 1", passed=True))
@@ -386,6 +398,7 @@ class TestFindings(unittest.TestCase):
             (("across", "inside", "y", "count", "b"), 4),
             (("across", "again", "x", "count", "a"), 5),
             (("across", "again", "x", "count", "b"), 6),
+            (("across", "sparse", "count", "a"), 1),
         ]
 
         keyed = create_findings(create_across_entries(), key="b")

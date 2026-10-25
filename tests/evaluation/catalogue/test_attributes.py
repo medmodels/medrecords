@@ -173,7 +173,7 @@ class TestAttributeHistogram(unittest.TestCase):
         assert histogram.below_count == 0
         assert histogram.above_count == 1
         assert histogram.statistics is not None
-        assert math.isclose(histogram.statistics["mean"], 3.0)
+        assert math.isclose(histogram.statistics.mean, 3.0)
         assert histogram.scale is Scale.Linear
         assert histogram.value_label == "amet"
         assert AttributeHistogram("missing", nodes(), [0.0, 1.0]).compute(
@@ -284,11 +284,11 @@ class TestAttributeCompleteness(unittest.TestCase):
         assert isinstance(failed, Assessment)
         assert isinstance(passed.value, float)
         assert math.isclose(passed.value, 0.75)
-        assert passed.requirement_label == "at least 50.0%"
+        assert passed.requirement_label == "at least 50%"
         assert passed.unit is Unit.Share
         assert passed.passed
         assert not failed.passed
-        assert failed.requirement_label == "at least 80.0%"
+        assert failed.requirement_label == "at least 80%"
         assert failed.unit is Unit.Share
 
     def test_invalid_compute(self) -> None:

@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-import copy
 import math
 import sys
 from abc import ABC, abstractmethod
 from bisect import bisect_left, bisect_right
 from datetime import datetime, timedelta
+from decimal import Decimal
 from enum import Enum
 from fractions import Fraction
 from io import BytesIO
 from itertools import pairwise
+from numbers import Integral
 from statistics import NormalDist, mean, stdev
 from typing import (
     TYPE_CHECKING,
@@ -28,15 +29,34 @@ from typing import (
     Sequence,
     Tuple,
     TypeAlias,
-    TypedDict,
     TypeVar,
     Union,
 )
 
 import polars as pl
 
+from medrecords.evaluation._json import (
+    JsonObject,
+    encode_cell,
+    encode_float,
+    encode_value,
+)
+
 if TYPE_CHECKING:
     from graphrecords import Identifier, QueryError, Value
+
+    from medrecords.evaluation._json import (
+        AssessmentDocument,
+        BinsDocument,
+        CountsDocument,
+        DistributionDocument,
+        HistogramDocument,
+        MeasurementDocument,
+        PlotDocument,
+        ScatterDocument,
+        StatisticsDocument,
+        TableDocument,
+    )
 
 
 class Unit(Enum):
@@ -87,12 +107,14 @@ class Table:
 
     A cell is a value or the path of an entry of the report, which a typeset
     report prints as a reference to that entry. A column may declare the unit of
-    its numbers; the cells stay as given.
+    its numbers; the cells stay as given. A table may say how many of its rows a
+    typeset report prints; every row stays in the table.
     """
 
     _headings: List[Identifier]
     _rows: List[List[Cell]]
     _units: Dict[Identifier, Unit]
+    _printed_rows: Optional[int]
 
     def __init__(
         self,
@@ -100,6 +122,7 @@ class Table:
         rows: Iterable[Iterable[Cell]],
         *,
         units: Optional[Mapping[Identifier, Unit]] = None,
+        printed_rows: Optional[int] = None,
     ) -> None:
         """Initializes a table from its headings and rows.
 
@@ -110,14 +133,19 @@ class Table:
             units (Optional[Mapping[Identifier, Unit]]): The unit of the numbers
                 of a column, by heading, for the columns that have one. Defaults
                 to None.
+            printed_rows (Optional[int]): How many rows, from the first, a
+                typeset report prints, with a line saying how many follow, or
+                None for every row. Defaults to None.
 
         Raises:
             ValueError: If a heading repeats, a row does not hold one value per
-                heading, or a unit names a heading the table does not have.
+                heading, a unit names a heading the table does not have, or the
+                printed rows are fewer than zero.
         """
         self._headings = list(headings)
         self._rows = [list(row) for row in rows]
         self._units = {} if units is None else dict(units)
+        self._printed_rows = printed_rows
 
         if len(set(self._headings)) != len(self._headings):
             msg = "every heading must be different"
@@ -133,12 +161,17 @@ class Table:
                 msg = f"a unit names the heading {heading!r}, which the table does not have"
                 raise ValueError(msg)
 
+        if printed_rows is not None and printed_rows < 0:
+            msg = "a table cannot print fewer than zero rows"
+            raise ValueError(msg)
+
     @classmethod
     def from_polars(
         cls,
         dataframe: pl.DataFrame,
         *,
         units: Optional[Mapping[Identifier, Unit]] = None,
+        printed_rows: Optional[int] = None,
     ) -> Table:
         """Converts a Polars DataFrame to a table, one heading per column.
 
@@ -150,6 +183,8 @@ class Table:
             units (Optional[Mapping[Identifier, Unit]]): The unit of the numbers
                 of a column, by column name, for the columns that have one.
                 Defaults to None.
+            printed_rows (Optional[int]): How many rows, from the first, a
+                typeset report prints, or None for every row. Defaults to None.
 
         Returns:
             Table: The DataFrame as a table.
@@ -173,7 +208,7 @@ class Table:
                 values.append(cell)
 
             rows.append(values)
-        return cls(dataframe.columns, rows, units=units)
+        return cls(dataframe.columns, rows, units=units, printed_rows=printed_rows)
 
     def to_polars(self) -> pl.DataFrame:
         """Converts the table to a Polars DataFrame, one column per heading.
@@ -242,15 +277,76 @@ class Table:
         """
         return dict(self._units)
 
+    @property
+    def printed_rows(self) -> Optional[int]:
+        """How many rows, from the first, a typeset report prints.
+
+        Returns:
+            Optional[int]: The number of printed rows, or None for every row.
+        """
+        return self._printed_rows
+
+    def _to_document(self) -> TableDocument:
+        return {
+            "kind": "table",
+            "headings": list(self._headings),
+            "rows": [[encode_cell(cell) for cell in row] for row in self._rows],
+            "units": [
+                self._units[heading].value if heading in self._units else None
+                for heading in self._headings
+            ],
+            "printed_rows": self._printed_rows,
+        }
+
+    @classmethod
+    def _from_document(cls, document: JsonObject) -> Table:
+        path = document.path
+        headings = [
+            JsonObject._decoded_identifier(heading, f"{path}.headings[{index}]")
+            for index, heading in enumerate(document.sequence("headings"))
+        ]
+        rows = [
+            [
+                JsonObject._decoded_cell(cell, f"{path}.rows")
+                for cell in JsonObject._decoded_sequence(row, f"{path}.rows")
+            ]
+            for row in document.sequence("rows")
+        ]
+        units = [
+            None
+            if content is None
+            else JsonObject._decoded_member(content, f"{path}.units[{index}]", Unit)
+            for index, content in enumerate(document.sequence("units"))
+        ]
+
+        if len(units) != len(headings):
+            msg = f"expected one unit per heading at {path}.units"
+            raise ValueError(msg)
+
+        try:
+            return cls(
+                headings,
+                rows,
+                units={
+                    heading: unit
+                    for heading, unit in zip(headings, units, strict=True)
+                    if unit is not None
+                },
+                printed_rows=document.optional_integer("printed_rows"),
+            )
+        except ValueError as error:
+            msg = f"{error} at {path}"
+            raise ValueError(msg) from error
+
     def __eq__(self, other: object) -> bool:
-        """Compares the Table with another one by its headings, rows and units.
+        """Compares the Table with another by headings, rows, units and printed rows.
 
         Args:
             other (object): The object to compare against.
 
         Returns:
-            bool: True if both hold the same headings, rows and units, otherwise
-                False.
+            bool: True if both hold the same headings, rows, units and printed
+                rows, otherwise False.
         """
         if not isinstance(other, Table):
             return NotImplemented
@@ -259,22 +355,25 @@ class Table:
             self._headings == other._headings
             and self._rows == other._rows
             and self._units == other._units
+            and self._printed_rows == other._printed_rows
         )
 
     def __repr__(self) -> str:
         """Returns the string representation of the Table.
 
         Returns:
-            str: The headings and rows of the Table, and its units when it
-                declares any.
+            str: The headings and rows of the Table, and its units and printed
+                rows when it declares them.
         """
-        if not self._units:
-            return f"Table(headings={self._headings!r}, rows={self._rows!r})"
+        parts = [f"headings={self._headings!r}", f"rows={self._rows!r}"]
 
-        return (
-            f"Table(headings={self._headings!r}, rows={self._rows!r}, "
-            f"units={self._units!r})"
-        )
+        if self._units:
+            parts.append(f"units={self._units!r}")
+
+        if self._printed_rows is not None:
+            parts.append(f"printed_rows={self._printed_rows!r}")
+
+        return f"Table({', '.join(parts)})"
 
 
 class Figure(Protocol):
@@ -341,6 +440,13 @@ class Plot:
             str: The SVG text.
         """
         return self._svg
+
+    def _to_document(self) -> PlotDocument:
+        return {"kind": "plot", "svg": self._svg}
+
+    @classmethod
+    def _from_document(cls, document: JsonObject) -> Plot:
+        return cls(document.string("svg"))
 
     def __eq__(self, other: object) -> bool:
         """Compares the Plot with another one by its SVG text.
@@ -497,6 +603,26 @@ class Measurement:
         """
         return self._unit
 
+    def _to_document(self) -> MeasurementDocument:
+        return {
+            "kind": "measurement",
+            "value": encode_float(self._value),
+            "lower": None if self._lower is None else encode_float(self._lower),
+            "upper": None if self._upper is None else encode_float(self._upper),
+            "p_value": None if self._p_value is None else encode_float(self._p_value),
+            "unit": None if self._unit is None else self._unit.value,
+        }
+
+    @classmethod
+    def _from_document(cls, document: JsonObject) -> Measurement:
+        return cls(
+            document.number("value"),
+            document.optional_number("lower"),
+            document.optional_number("upper"),
+            document.optional_number("p_value"),
+            unit=document.optional_member("unit", Unit),
+        )
+
     def __eq__(self, other: object) -> bool:
         """Compares the Measurement with another one by its numbers and unit.
 
@@ -601,6 +727,26 @@ class Assessment:
         """
         return self._unit
 
+    def _to_document(self) -> AssessmentDocument:
+        return {
+            "kind": "assessment",
+            "value": encode_value(self._value),
+            "requirement_label": self._requirement_label,
+            "passed": self._passed,
+            "unit": None if self._unit is None else self._unit.value,
+        }
+
+    @classmethod
+    def _from_document(cls, document: JsonObject) -> Assessment:
+        return cls(
+            JsonObject._decoded_value(
+                document.content("value"), f"{document.path}.value"
+            ),
+            document.string("requirement_label"),
+            passed=document.boolean("passed"),
+            unit=document.optional_member("unit", Unit),
+        )
+
     def __eq__(self, other: object) -> bool:
         """Compares the Assessment with another one by its contents.
 
@@ -639,25 +785,260 @@ class Assessment:
         return f"{contents}, unit={self._unit!r})"
 
 
-class Bin(TypedDict):
-    """One bin of a histogram."""
+class Bin:
+    """One bin of a histogram: its edges and how many values it holds."""
 
-    lower: float
-    upper: float
-    count: int
+    _lower: float
+    _upper: float
+    _count: int
+
+    def __init__(self, lower: float, upper: float, count: int) -> None:
+        """Initializes a bin.
+
+        Args:
+            lower (float): The lower edge.
+            upper (float): The upper edge.
+            count (int): How many values the bin holds.
+        """
+        self._lower = lower
+        self._upper = upper
+        self._count = count
+
+    @property
+    def lower(self) -> float:
+        """The lower edge of the Bin.
+
+        Returns:
+            float: The lower edge.
+        """
+        return self._lower
+
+    @property
+    def upper(self) -> float:
+        """The upper edge of the Bin.
+
+        Returns:
+            float: The upper edge.
+        """
+        return self._upper
+
+    @property
+    def count(self) -> int:
+        """How many values the Bin holds.
+
+        Returns:
+            int: The count.
+        """
+        return self._count
+
+    def __eq__(self, other: object) -> bool:
+        """Compares the Bin with another one by its edges and count.
+
+        Args:
+            other (object): The object to compare against.
+
+        Returns:
+            bool: True if both have the same edges and count, otherwise False.
+        """
+        if not isinstance(other, Bin):
+            return NotImplemented
+
+        return (
+            self._lower == other._lower
+            and self._upper == other._upper
+            and self._count == other._count
+        )
+
+    def __repr__(self) -> str:
+        """Returns the string representation of the Bin.
+
+        Returns:
+            str: The edges and count of the Bin.
+        """
+        return (
+            f"Bin(lower={self._lower!r}, upper={self._upper!r}, count={self._count!r})"
+        )
 
 
-class Statistics(TypedDict):
+class Statistics:
     """The summary statistics of numeric values."""
 
-    count: int
-    mean: float
-    standard_deviation: float
-    minimum: float
-    lower_quartile: float
-    median: float
-    upper_quartile: float
-    maximum: float
+    _count: int
+    _mean: float
+    _standard_deviation: Optional[float]
+    _minimum: float
+    _lower_quartile: float
+    _median: float
+    _upper_quartile: float
+    _maximum: float
+
+    def __init__(
+        self,
+        *,
+        count: int,
+        mean: float,
+        standard_deviation: Optional[float],
+        minimum: float,
+        lower_quartile: float,
+        median: float,
+        upper_quartile: float,
+        maximum: float,
+    ) -> None:
+        """Initializes summary statistics.
+
+        Args:
+            count (int): The number of values.
+            mean (float): The arithmetic mean.
+            standard_deviation (Optional[float]): The standard deviation over
+                one degree less, or None for a single value.
+            minimum (float): The smallest value.
+            lower_quartile (float): The value a quarter of the values lie below.
+            median (float): The value half of the values lie below.
+            upper_quartile (float): The value three quarters of the values lie
+                below.
+            maximum (float): The largest value.
+        """
+        self._count = count
+        self._mean = mean
+        self._standard_deviation = standard_deviation
+        self._minimum = minimum
+        self._lower_quartile = lower_quartile
+        self._median = median
+        self._upper_quartile = upper_quartile
+        self._maximum = maximum
+
+    @property
+    def count(self) -> int:
+        """The number of values.
+
+        Returns:
+            int: The count.
+        """
+        return self._count
+
+    @property
+    def mean(self) -> float:
+        """The arithmetic mean of the values.
+
+        Returns:
+            float: The mean.
+        """
+        return self._mean
+
+    @property
+    def standard_deviation(self) -> Optional[float]:
+        """The standard deviation of the values, over one degree less.
+
+        Returns:
+            Optional[float]: The standard deviation, or None for a single value.
+        """
+        return self._standard_deviation
+
+    @property
+    def minimum(self) -> float:
+        """The smallest value.
+
+        Returns:
+            float: The minimum.
+        """
+        return self._minimum
+
+    @property
+    def lower_quartile(self) -> float:
+        """The value a quarter of the values lie below.
+
+        Returns:
+            float: The lower quartile.
+        """
+        return self._lower_quartile
+
+    @property
+    def median(self) -> float:
+        """The value half of the values lie below.
+
+        Returns:
+            float: The median.
+        """
+        return self._median
+
+    @property
+    def upper_quartile(self) -> float:
+        """The value three quarters of the values lie below.
+
+        Returns:
+            float: The upper quartile.
+        """
+        return self._upper_quartile
+
+    @property
+    def maximum(self) -> float:
+        """The largest value.
+
+        Returns:
+            float: The maximum.
+        """
+        return self._maximum
+
+    def _to_document(self) -> StatisticsDocument:
+        return {
+            "count": self._count,
+            "mean": encode_float(self._mean),
+            "standard_deviation": None
+            if self._standard_deviation is None
+            else encode_float(self._standard_deviation),
+            "minimum": encode_float(self._minimum),
+            "lower_quartile": encode_float(self._lower_quartile),
+            "median": encode_float(self._median),
+            "upper_quartile": encode_float(self._upper_quartile),
+            "maximum": encode_float(self._maximum),
+        }
+
+    @classmethod
+    def _from_document(cls, document: JsonObject) -> Statistics:
+        return cls(
+            count=document.integer("count"),
+            mean=document.number("mean"),
+            standard_deviation=document.optional_number("standard_deviation"),
+            minimum=document.number("minimum"),
+            lower_quartile=document.number("lower_quartile"),
+            median=document.number("median"),
+            upper_quartile=document.number("upper_quartile"),
+            maximum=document.number("maximum"),
+        )
+
+    def __eq__(self, other: object) -> bool:
+        """Compares the Statistics with another one by every number.
+
+        Args:
+            other (object): The object to compare against.
+
+        Returns:
+            bool: True if both hold the same numbers, otherwise False.
+        """
+        if not isinstance(other, Statistics):
+            return NotImplemented
+
+        return (
+            self._count == other._count
+            and self._mean == other._mean
+            and self._standard_deviation == other._standard_deviation
+            and self._minimum == other._minimum
+            and self._lower_quartile == other._lower_quartile
+            and self._median == other._median
+            and self._upper_quartile == other._upper_quartile
+            and self._maximum == other._maximum
+        )
+
+    def __repr__(self) -> str:
+        """Returns the string representation of the Statistics.
+
+        Returns:
+            str: The count, mean and standard deviation.
+        """
+        return (
+            f"Statistics(count={self._count!r}, mean={self._mean!r}, "
+            f"standard_deviation={self._standard_deviation!r})"
+        )
 
 
 #: The share of each distribution's values a shared histogram may leave below its
@@ -681,12 +1062,12 @@ _WHOLE_NUMBERS_PER_BIN: Final[int] = 4
 #: it is odd, so every edge lies halfway between whole numbers.
 _WHOLE_NUMBER_RATIO: Final[int] = 3
 
+#: The leading digits of the round numbers the outer edges of logarithmic bins fall on.
+_ROUND_STEPS: Final[Tuple[int, ...]] = (1, 2, 5)
+
 #: Whole numbers are binned as such only below this magnitude, where the points
 #: halfway between them are still floats.
 _LARGEST_WHOLE_NUMBER: Final[float] = 2.0**52
-
-#: The leading digits of the round numbers that rounded edges fall on.
-_ROUND_STEPS: Final[Tuple[int, ...]] = (1, 2, 5)
 
 
 def _rounded_width(span: float) -> Fraction:
@@ -787,9 +1168,8 @@ class Bins:
 
         if self._count is not None:
             parts.append(
-                f"about {self._count} bars, or one per value for values without "
-                f"decimals that span at most {_WHOLE_NUMBERS_PER_BIN * self._count} "
-                "numbers"
+                f"about {self._count} bars, or one per value for integers that span "
+                f"at most {_WHOLE_NUMBERS_PER_BIN * self._count} numbers"
             )
 
         if self._scale is not None:
@@ -797,14 +1177,33 @@ class Bins:
 
         if self._outside_share is not None:
             parts.append(
-                f"at most {self._outside_share:.1%} of the values outside the axis "
-                "at each end"
+                f"at most {(Decimal(repr(self._outside_share)) * 100).normalize():f}% "
+                "of the values outside the axis at each end"
             )
 
         if not parts:
             return "chosen from the values"
 
         return "; ".join(parts)
+
+    def _to_document(self) -> BinsDocument:
+        return {
+            "count": self._count,
+            "scale": None if self._scale is None else self._scale.value,
+            "outside_share": self._outside_share,
+        }
+
+    @classmethod
+    def _from_document(cls, document: JsonObject) -> Bins:
+        try:
+            return cls(
+                count=document.optional_integer("count"),
+                scale=document.optional_member("scale", Scale),
+                outside_share=document.optional_number("outside_share"),
+            )
+        except ValueError as error:
+            msg = f"{error} at {document.path}"
+            raise ValueError(msg) from error
 
     def __eq__(self, other: object) -> bool:
         """Compares the Bins with another one by their settings.
@@ -881,7 +1280,7 @@ class Distribution:
         Raises:
             ValueError: If there is no value, or a value is not finite.
         """
-        self._values = [float(value) for value in values]
+        self._values = list(values)
         self._bins = bins
         self._value_label = value_label
         self._count_label = count_label
@@ -903,6 +1302,15 @@ class Distribution:
             List[float]: Every value, in the order given.
         """
         return list(self._values)
+
+    @property
+    def whole_numbers(self) -> bool:
+        """Whether every value is an integer.
+
+        Returns:
+            bool: True if every value was given as an integer, otherwise False.
+        """
+        return all(isinstance(value, Integral) for value in self._values)
 
     @property
     def bins(self) -> Optional[Bins]:
@@ -959,14 +1367,14 @@ class Distribution:
         return mean(self._values)
 
     @property
-    def standard_deviation(self) -> float:
+    def standard_deviation(self) -> Optional[float]:
         """The standard deviation of the values, over one degree less.
 
         Returns:
-            float: The standard deviation, or 0.0 for a single value.
+            Optional[float]: The standard deviation, or None for a single value.
         """
         if len(self._values) == 1:
-            return 0.0
+            return None
 
         return stdev(self._values)
 
@@ -1025,16 +1433,16 @@ class Distribution:
         """
         ordered = sorted(self._values)
 
-        return {
-            "count": len(ordered),
-            "mean": mean(ordered),
-            "standard_deviation": self.standard_deviation,
-            "minimum": ordered[0],
-            "lower_quartile": self._interpolated(ordered, 0.25),
-            "median": self._interpolated(ordered, 0.5),
-            "upper_quartile": self._interpolated(ordered, 0.75),
-            "maximum": ordered[-1],
-        }
+        return Statistics(
+            count=len(ordered),
+            mean=mean(ordered),
+            standard_deviation=self.standard_deviation,
+            minimum=ordered[0],
+            lower_quartile=self._interpolated(ordered, 0.25),
+            median=self._interpolated(ordered, 0.5),
+            upper_quartile=self._interpolated(ordered, 0.75),
+            maximum=ordered[-1],
+        )
 
     def histogram(self, bins: Optional[Bins] = None) -> Histogram:
         """Counts the values in the bins the binning rule chooses.
@@ -1097,6 +1505,44 @@ class Distribution:
             raise ValueError(msg)
 
         asked = Bins() if bins is None else bins
+        conflict = cls._conflict(distributions, asked)
+
+        if conflict is not None:
+            raise ValueError(conflict)
+
+        declared = [
+            distribution._bins
+            for distribution in distributions
+            if distribution._bins is not None
+        ]
+        scales = {setting._scale for setting in declared if setting._scale is not None}
+        shares = {
+            setting._outside_share
+            for setting in declared
+            if setting._outside_share is not None
+        }
+        largest = max(len(distribution._values) for distribution in distributions)
+        given = [setting._count for setting in declared if setting._count is not None]
+        count = asked._count or max(given, default=math.ceil(math.log2(largest)) + 1)
+        scale = asked._scale or next(iter(scales), None)
+        outside_share = asked._outside_share
+
+        if outside_share is None:
+            outside_share = next(iter(shares), _OUTSIDE_SHARE)
+
+        ordered = [sorted(distribution._values) for distribution in distributions]
+        whole = all(distribution.whole_numbers for distribution in distributions)
+        edges, chosen = cls._shared_edges(
+            ordered, count, scale, outside_share, whole=whole
+        )
+
+        return [
+            Histogram._from_distribution(distribution, edges, chosen)
+            for distribution in distributions
+        ]
+
+    @staticmethod
+    def _conflict(distributions: Sequence[Distribution], asked: Bins) -> Optional[str]:
         declared = [
             distribution._bins
             for distribution in distributions
@@ -1110,54 +1556,12 @@ class Distribution:
         }
 
         if asked._scale is None and len(scales) > 1:
-            msg = "the distributions declare different scales"
-            raise ValueError(msg)
+            return "the distributions declare different scales"
 
         if asked._outside_share is None and len(shares) > 1:
-            msg = "the distributions declare different outside shares"
-            raise ValueError(msg)
+            return "the distributions declare different outside shares"
 
-        largest = max(len(distribution._values) for distribution in distributions)
-        given = [setting._count for setting in declared if setting._count is not None]
-        count = asked._count or max(given, default=math.ceil(math.log2(largest)) + 1)
-        scale = asked._scale or next(iter(scales), None)
-        outside_share = asked._outside_share
-
-        if outside_share is None:
-            outside_share = next(iter(shares), _OUTSIDE_SHARE)
-
-        ordered = [sorted(distribution._values) for distribution in distributions]
-        edges, chosen = cls._shared_edges(ordered, count, scale, outside_share)
-
-        return [
-            Histogram._from_distribution(distribution, edges, chosen)
-            for distribution in distributions
-        ]
-
-    @staticmethod
-    def _agreeing(distributions: Sequence[Distribution]) -> bool:
-        """Tells whether distributions can be counted in shared histograms as given.
-
-        Args:
-            distributions (Sequence[Distribution]): The distributions.
-
-        Returns:
-            bool: True if no two of them declare different scales or outside
-                shares, otherwise False.
-        """
-        declared = [
-            distribution._bins
-            for distribution in distributions
-            if distribution._bins is not None
-        ]
-        scales = {setting._scale for setting in declared if setting._scale is not None}
-        shares = {
-            setting._outside_share
-            for setting in declared
-            if setting._outside_share is not None
-        }
-
-        return len(scales) <= 1 and len(shares) <= 1
+        return None
 
     @classmethod
     def _shared_edges(
@@ -1166,6 +1570,8 @@ class Distribution:
         count: int,
         scale: Optional[Scale],
         outside_share: float,
+        *,
+        whole: bool,
     ) -> Tuple[List[float], Scale]:
         """Chooses the edges and the scale shared histograms are counted over.
 
@@ -1176,18 +1582,15 @@ class Distribution:
             scale (Optional[Scale]): The declared scale, or None to choose one.
             outside_share (float): The share of each distribution's values the
                 axis may leave out on each side.
+            whole (bool): Whether every value is an integer.
 
         Returns:
             Tuple[List[float], Scale]: The edges, from the lowest to the
                 highest, and the scale they are drawn on.
         """
-        whole = all(
-            value.is_integer() and abs(value) < _LARGEST_WHOLE_NUMBER
-            for values in ordered
-            for value in values
-        )
-
-        if whole:
+        if whole and all(
+            abs(value) < _LARGEST_WHOLE_NUMBER for values in ordered for value in values
+        ):
             low = min(values[0] for values in ordered)
             high = max(cls._high_value(values, outside_share) for values in ordered)
             logarithmic = cls._logarithmic_whole_number_edges(low, high)
@@ -1356,12 +1759,13 @@ class Distribution:
     def _logarithmic_edges(
         cls, ordered: Sequence[Sequence[float]], count: int, outside_share: float
     ) -> Optional[List[float]]:
-        """Chooses edges of one ratio over the positive values.
+        """Chooses edges of one ratio between round outer edges over positive values.
 
-        The axis starts at the lowest held positive value and ends at the
-        highest held value; the outer edges are 1, 2 or 5 times a power of ten
-        beyond them, and the span between them holds about the bin count of
-        bins, whatever the outer rounding adds.
+        The outer edges are 1, 2 or 5 times a power of ten: the largest at or
+        below the lowest held positive value and the smallest at or above the
+        highest held value. Between them every bin spans the same ratio, with
+        about the bin count of bins per decade the held values span, or per
+        decade when they span less than one.
 
         Args:
             ordered (Sequence[Sequence[float]]): The values of every
@@ -1391,17 +1795,14 @@ class Distribution:
 
         first = max(number for number in cls._round_numbers(low) if number <= low)
         last = min(number for number in cls._round_numbers(high) if number >= high)
-
-        lowest = float(first)
-        highest = float(last)
-        decades = math.log10(highest / lowest)
+        start = math.log10(float(first))
+        decades = math.log10(float(last)) - start
         bin_count = max(1, round(count * decades / max(math.log10(high / low), 1)))
-        edges = [
-            lowest * (highest / lowest) ** (step / bin_count)
-            for step in range(bin_count + 1)
+        inner = [
+            10 ** (start + step * decades / bin_count) for step in range(1, bin_count)
         ]
 
-        return [lowest, *edges[1:-1], highest]
+        return [float(first), *inner, float(last)]
 
     @staticmethod
     def _round_numbers(value: float) -> List[Fraction]:
@@ -1478,6 +1879,51 @@ class Distribution:
         weight = position - lower
         return ordered[lower] * (1 - weight) + ordered[upper] * weight
 
+    def _to_document(
+        self, histogram: Optional[Histogram] = None
+    ) -> DistributionDocument:
+        drawn = self.histogram() if histogram is None else histogram
+
+        return {
+            "kind": "distribution",
+            "values": list(self._values),
+            "bins": None if self._bins is None else self._bins._to_document(),
+            "value_label": self._value_label,
+            "count_label": self._count_label,
+            "arrangement": None
+            if self._arrangement is None
+            else self._arrangement.value,
+            "statistics": self.statistics._to_document(),
+            "histogram": {
+                "edges": drawn.edges,
+                "counts": drawn.counts,
+                "below_count": drawn.below_count,
+                "above_count": drawn.above_count,
+                "scale": drawn.scale.value,
+                "whole_numbers": drawn.whole_numbers,
+            },
+        }
+
+    @classmethod
+    def _from_document(cls, document: JsonObject) -> Distribution:
+        values = [
+            JsonObject._decoded_number(value, f"{document.path}.values")
+            for value in document.sequence("values")
+        ]
+        bins = document.optional_document("bins")
+
+        try:
+            return cls(
+                values,
+                bins=None if bins is None else Bins._from_document(bins),
+                value_label=document.optional_string("value_label"),
+                count_label=document.optional_string("count_label"),
+                arrangement=document.optional_member("arrangement", Arrangement),
+            )
+        except ValueError as error:
+            msg = f"{error} at {document.path}"
+            raise ValueError(msg) from error
+
     def __eq__(self, other: object) -> bool:
         """Compares the Distribution with another one by its values and settings.
 
@@ -1516,7 +1962,6 @@ class Histogram:
     above the last are counted apart, so that nothing is lost silently. The
     statistics describe every value, the ones outside the edges included; a
     histogram that counts values but carries no statistics withholds them.
-    Edges halfway between whole numbers are bins of whole numbers.
     """
 
     _edges: List[float]
@@ -1525,6 +1970,7 @@ class Histogram:
     _above_count: int
     _statistics: Optional[Statistics]
     _scale: Scale
+    _whole_numbers: bool
     _value_label: Optional[str]
     _count_label: Optional[str]
     _arrangement: Optional[Arrangement]
@@ -1538,6 +1984,7 @@ class Histogram:
         above_count: int = 0,
         statistics: Optional[Statistics] = None,
         scale: Scale = Scale.Linear,
+        whole_numbers: bool = False,
         value_label: Optional[str] = None,
         count_label: Optional[str] = None,
         arrangement: Optional[Arrangement] = None,
@@ -1558,6 +2005,8 @@ class Histogram:
                 Defaults to None.
             scale (Scale): How the value axis is spaced. Defaults to
                 Scale.Linear.
+            whole_numbers (bool): Whether every counted value is an integer.
+                Defaults to False.
             value_label (Optional[str]): What the values measure, as the value
                 axis names it, such as "days", or None for no axis caption.
                 Defaults to None.
@@ -1577,8 +2026,9 @@ class Histogram:
         self._counts = list(counts)
         self._below_count = below_count
         self._above_count = above_count
-        self._statistics = copy.copy(statistics)
+        self._statistics = statistics
         self._scale = scale
+        self._whole_numbers = whole_numbers
         self._value_label = value_label
         self._count_label = count_label
         self._arrangement = arrangement
@@ -1626,7 +2076,7 @@ class Histogram:
             Histogram: The counts per bin, the counts outside the edges, and the
                 statistics of the values, or none when there is no value.
         """
-        materialized = [float(value) for value in values]
+        materialized = list(values)
 
         if not materialized:
             bounds = cls._checked_edges(edges)
@@ -1678,6 +2128,7 @@ class Histogram:
             above_count=above_count,
             statistics=distribution.statistics,
             scale=scale,
+            whole_numbers=distribution.whole_numbers,
             value_label=distribution._value_label,
             count_label=distribution._count_label,
             arrangement=distribution._arrangement,
@@ -1776,7 +2227,7 @@ class Histogram:
         Returns:
             Optional[Statistics]: The statistics, or None without values.
         """
-        return copy.copy(self._statistics)
+        return self._statistics
 
     @property
     def scale(self) -> Scale:
@@ -1786,6 +2237,15 @@ class Histogram:
             Scale: The scale.
         """
         return self._scale
+
+    @property
+    def whole_numbers(self) -> bool:
+        """Whether every counted value is an integer.
+
+        Returns:
+            bool: True if every counted value is an integer, otherwise False.
+        """
+        return self._whole_numbers
 
     @property
     def value_label(self) -> Optional[str]:
@@ -1831,7 +2291,7 @@ class Histogram:
             List[Bin]: One bin per count, from the lowest edge to the highest.
         """
         return [
-            {"lower": lower, "upper": upper, "count": count}
+            Bin(lower, upper, count)
             for (lower, upper), count in zip(
                 pairwise(self._edges), self._counts, strict=True
             )
@@ -1852,6 +2312,56 @@ class Histogram:
             }
         )
 
+    def _to_document(self) -> HistogramDocument:
+        return {
+            "kind": "histogram",
+            "edges": list(self._edges),
+            "counts": list(self._counts),
+            "below_count": self._below_count,
+            "above_count": self._above_count,
+            "statistics": None
+            if self._statistics is None
+            else self._statistics._to_document(),
+            "scale": self._scale.value,
+            "whole_numbers": self._whole_numbers,
+            "value_label": self._value_label,
+            "count_label": self._count_label,
+            "arrangement": None
+            if self._arrangement is None
+            else self._arrangement.value,
+        }
+
+    @classmethod
+    def _from_document(cls, document: JsonObject) -> Histogram:
+        edges = [
+            JsonObject._decoded_number(edge, f"{document.path}.edges")
+            for edge in document.sequence("edges")
+        ]
+        counts = [
+            JsonObject._decoded_integer(count, f"{document.path}.counts")
+            for count in document.sequence("counts")
+        ]
+        statistics = document.optional_document("statistics")
+
+        try:
+            return cls(
+                edges,
+                counts,
+                below_count=document.integer("below_count"),
+                above_count=document.integer("above_count"),
+                statistics=None
+                if statistics is None
+                else Statistics._from_document(statistics),
+                scale=document.member("scale", Scale),
+                whole_numbers=document.boolean("whole_numbers"),
+                value_label=document.optional_string("value_label"),
+                count_label=document.optional_string("count_label"),
+                arrangement=document.optional_member("arrangement", Arrangement),
+            )
+        except ValueError as error:
+            msg = f"{error} at {document.path}"
+            raise ValueError(msg) from error
+
     def __eq__(self, other: object) -> bool:
         """Compares the Histogram with another one by its contents.
 
@@ -1860,7 +2370,8 @@ class Histogram:
 
         Returns:
             bool: True if both hold the same edges, counts, outside counts,
-                statistics, scale, labels and arrangement, otherwise False.
+                statistics, scale, whole numbers flag, labels and arrangement,
+                otherwise False.
         """
         if not isinstance(other, Histogram):
             return NotImplemented
@@ -1872,6 +2383,7 @@ class Histogram:
             and self._above_count == other._above_count
             and self._statistics == other._statistics
             and self._scale == other._scale
+            and self._whole_numbers == other._whole_numbers
             and self._value_label == other._value_label
             and self._count_label == other._count_label
             and self._arrangement == other._arrangement
@@ -2027,6 +2539,46 @@ class Counts:
             pl.DataFrame: One row per value with its count and its share.
         """
         return self.to_table().to_polars()
+
+    def _to_document(self) -> CountsDocument:
+        return {
+            "kind": "counts",
+            "counts": [
+                {"value": encode_value(value), "count": count}
+                for value, count in self._counts.items()
+            ],
+            "total": self._total,
+            "value_label": self._value_label,
+            "count_label": self._count_label,
+            "remainder_label": self._remainder_label,
+            "arrangement": None
+            if self._arrangement is None
+            else self._arrangement.value,
+        }
+
+    @classmethod
+    def _from_document(cls, document: JsonObject) -> Counts:
+        counts: Dict[Value, int] = {}
+
+        for index, item in enumerate(document.sequence("counts")):
+            counted = JsonObject(item, f"{document.path}.counts[{index}]")
+            value = JsonObject._decoded_value(
+                counted.content("value"), f"{counted.path}.value"
+            )
+            counts[value] = counted.integer("count")
+
+        try:
+            return cls(
+                counts,
+                document.integer("total"),
+                value_label=document.optional_string("value_label"),
+                count_label=document.optional_string("count_label"),
+                remainder_label=document.optional_string("remainder_label"),
+                arrangement=document.optional_member("arrangement", Arrangement),
+            )
+        except ValueError as error:
+            msg = f"{error} at {document.path}"
+            raise ValueError(msg) from error
 
     def __eq__(self, other: object) -> bool:
         """Compares the Counts with another one by its contents.
@@ -2202,6 +2754,60 @@ class Scatter:
             },
             schema={"x": pl.Float64, "y": pl.Float64, "label": pl.String},
         )
+
+    def _to_document(self) -> ScatterDocument:
+        return {
+            "kind": "scatter",
+            "points": [[x, y] for x, y in self._points],
+            "x_label": self._x_label,
+            "y_label": self._y_label,
+            "x_scale": self._x_scale.value,
+            "y_scale": self._y_scale.value,
+            "labels": [
+                {"index": index, "label": label}
+                for index, label in self._labels.items()
+            ],
+            "diagonal": self._diagonal,
+        }
+
+    @classmethod
+    def _from_document(cls, document: JsonObject) -> Scatter:
+        points: List[Tuple[float, float]] = []
+
+        for index, item in enumerate(document.sequence("points")):
+            path = f"{document.path}.points[{index}]"
+            coordinates = JsonObject._decoded_sequence(item, path)
+
+            if len(coordinates) != 2:
+                msg = f"expected two coordinates at {path}"
+                raise ValueError(msg)
+
+            points.append(
+                (
+                    JsonObject._decoded_number(coordinates[0], path),
+                    JsonObject._decoded_number(coordinates[1], path),
+                )
+            )
+
+        labels: Dict[int, str] = {}
+
+        for index, item in enumerate(document.sequence("labels")):
+            label = JsonObject(item, f"{document.path}.labels[{index}]")
+            labels[label.integer("index")] = label.string("label")
+
+        try:
+            return cls(
+                points,
+                x_label=document.string("x_label"),
+                y_label=document.string("y_label"),
+                x_scale=document.member("x_scale", Scale),
+                y_scale=document.member("y_scale", Scale),
+                labels=labels,
+                diagonal=document.boolean("diagonal"),
+            )
+        except ValueError as error:
+            msg = f"{error} at {document.path}"
+            raise ValueError(msg) from error
 
     def __eq__(self, other: object) -> bool:
         """Compares the Scatter with another one by its contents.

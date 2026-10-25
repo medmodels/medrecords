@@ -18,7 +18,7 @@ from medrecords.evaluation.analytic import (
     Table,
     Unit,
 )
-from medrecords.evaluation.entry import DerivationEntry, GroupEntry, InputEntry
+from medrecords.evaluation.entry import DerivationEntry, GroupEntry
 from medrecords.evaluation.findings import Findings
 from medrecords.evaluation.placement import (
     Placement,
@@ -41,6 +41,18 @@ from ._fixtures import (
     write_json,
 )
 
+SINCE_DOCUMENT = {
+    "kind": "datetime",
+    "year": 2026,
+    "month": 9,
+    "day": 2,
+    "hour": 0,
+    "minute": 0,
+    "second": 0,
+    "microsecond": 0,
+    "offset": 0,
+}
+
 
 class TestReport(unittest.TestCase):
     def test_init(self) -> None:
@@ -50,7 +62,6 @@ class TestReport(unittest.TestCase):
         assert report.description is None
         assert report.started_at == datetime(2026, 9, 2, 10, 0, tzinfo=timezone.utc)
         assert report.duration == timedelta(seconds=2)
-        assert report.inputs == [InputEntry("medrecord", 3, 2)]
         assert report.parameters == {}
         assert [entry.name for entry in report.entries] == ["amet", "sit", "across"]
         assert report.analytic("amet").result == 1
@@ -80,8 +91,9 @@ class TestReport(unittest.TestCase):
             "counts": [4, 1],
             "below_count": 0,
             "above_count": 0,
-            "statistics": Distribution([4, 1, 3, 2, 10]).statistics,
+            "statistics": Distribution([4, 1, 3, 2, 10]).statistics._to_document(),
             "scale": "linear",
+            "whole_numbers": True,
             "value_label": None,
             "count_label": None,
             "arrangement": None,
@@ -94,6 +106,7 @@ class TestReport(unittest.TestCase):
             "above_count": 2,
             "statistics": None,
             "scale": "linear",
+            "whole_numbers": False,
             "value_label": None,
             "count_label": None,
             "arrangement": None,
@@ -103,6 +116,7 @@ class TestReport(unittest.TestCase):
             "headings": ["value", "share"],
             "rows": [["sit", 0.75]],
             "units": [None, "share"],
+            "printed_rows": None,
         }
         assert entries[29]["result"] == {
             "kind": "measurement",
@@ -124,7 +138,7 @@ class TestReport(unittest.TestCase):
             "counts": [
                 {"value": "sit", "count": 2},
                 {
-                    "value": {"kind": "datetime", "value": "2026-09-02T00:00:00+00:00"},
+                    "value": SINCE_DOCUMENT,
                     "count": 1,
                 },
             ],
@@ -137,10 +151,7 @@ class TestReport(unittest.TestCase):
         assert entries[26]["result"]["statistics"] is None
         assert entries[20]["name"] == 2023
         assert entries[21]["kind"] == "keyed_analytic"
-        assert entries[21]["results"][1]["key"] == {
-            "kind": "datetime",
-            "value": "2026-09-02T00:00:00+00:00",
-        }
+        assert entries[21]["results"][1]["key"] == SINCE_DOCUMENT
         assert [
             keyed["result"]["histogram"]["counts"] for keyed in entries[21]["results"]
         ] == [[1, 1, 1, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0, 1, 1]]
@@ -153,6 +164,7 @@ class TestReport(unittest.TestCase):
             "below_count": 0,
             "above_count": 0,
             "scale": "linear",
+            "whole_numbers": True,
         }
         assert entries[22]["results"][1]["result"]["kind"] == "failure"
         assert entries[23]["kind"] == "keyed_group"
@@ -169,15 +181,9 @@ class TestReport(unittest.TestCase):
             "p_value": None,
             "unit": None,
         }
-        assert entries[19]["result"]["value"] == {
-            "kind": "datetime",
-            "value": "2026-09-02T00:00:00+00:00",
-        }
+        assert entries[19]["result"]["value"] == SINCE_DOCUMENT
         assert entries[7]["result"] == {"kind": "float", "value": "inf"}
-        assert entries[8]["result"]["rows"][1][0] == {
-            "kind": "datetime",
-            "value": "2026-09-02T00:00:00+00:00",
-        }
+        assert entries[8]["result"]["rows"][1][0] == SINCE_DOCUMENT
         assert entries[8]["result"]["units"] == [None, None, None, None, None]
         assert entries[9]["result"]["kind"] == "failure"
         assert entries[10]["derivation"]["failure"]["kind"] == "failure"
@@ -218,7 +224,7 @@ class TestReport(unittest.TestCase):
         assert entries[16]["parameters"] == {
             "limit": 3,
             "groups": ["sit", "elit"],
-            "since": {"kind": "datetime", "value": "2026-09-02T00:00:00+00:00"},
+            "since": SINCE_DOCUMENT,
             "window": {
                 "kind": "timedelta",
                 "days": 1,
@@ -268,7 +274,6 @@ class TestReport(unittest.TestCase):
         report = Report(
             "lorem",
             None,
-            [],
             [create_analytic_entry("nan", result=math.nan)],
             datetime.now(timezone.utc),
             timedelta(),
@@ -291,7 +296,6 @@ class TestReport(unittest.TestCase):
         rich = Report(
             "lorem",
             "ipsum",
-            [InputEntry("medrecord", 3, 2)],
             [
                 create_analytic_entry("plot", result=create_plot()),
                 create_analytic_entry("table", result=Table(["a"], [[1], [None]])),
@@ -332,7 +336,6 @@ class TestReport(unittest.TestCase):
                     "derived",
                     "Derived",
                     "sit",
-                    [InputEntry("medrecord", 1, 0)],
                     DerivationEntry(
                         {"node": "lorem"}, {"kept": [1, 2]}, timedelta(seconds=1), None
                     ),
@@ -342,7 +345,6 @@ class TestReport(unittest.TestCase):
                     "failed",
                     "Failed",
                     None,
-                    [],
                     DerivationEntry({}, {}, timedelta(), create_failure()),
                     [],
                 ),
@@ -350,7 +352,6 @@ class TestReport(unittest.TestCase):
                     2023,
                     "2023",
                     None,
-                    [],
                     None,
                     [create_analytic_entry(datetime(2026, 9, 2, tzinfo=timezone.utc))],
                 ),
@@ -438,6 +439,7 @@ class TestReport(unittest.TestCase):
             below_count=1,
             above_count=1,
             statistics=Distribution([4, 1, 3, 2, 10]).statistics,
+            whole_numbers=True,
         )
         assert loaded.keyed_group("sit").derivations == (
             create_keyed_group_entry().derivations
@@ -471,7 +473,7 @@ class TestReport(unittest.TestCase):
 
     def test_keyed_group(self) -> None:
         report = Report(
-            "lorem", None, [], [create_keyed_group_entry()], datetime.now(), timedelta()
+            "lorem", None, [create_keyed_group_entry()], datetime.now(), timedelta()
         )
 
         assert report.keyed_group("sit") == create_keyed_group_entry()
@@ -480,7 +482,6 @@ class TestReport(unittest.TestCase):
         report = Report(
             "lorem",
             None,
-            [],
             [create_keyed_analytic_entry()],
             datetime.now(),
             timedelta(),
@@ -502,7 +503,6 @@ class TestReport(unittest.TestCase):
         assert report != Report(
             "lorem",
             None,
-            [InputEntry("medrecord", 3, 2)],
             report.entries,
             report.started_at,
             timedelta(),
@@ -510,7 +510,6 @@ class TestReport(unittest.TestCase):
         assert report != Report(
             "lorem",
             None,
-            [InputEntry("medrecord", 3, 2)],
             report.entries,
             datetime.now(timezone.utc),
             report.duration,
@@ -518,7 +517,6 @@ class TestReport(unittest.TestCase):
         assert report != Report(
             "lorem",
             None,
-            [InputEntry("medrecord", 3, 2)],
             report.entries,
             report.started_at,
             report.duration,
@@ -526,7 +524,7 @@ class TestReport(unittest.TestCase):
         )
         assert report != create_group_entry()
 
-        twin = GroupEntry("lorem", "lorem", None, report.inputs, None, report.entries)
+        twin = GroupEntry("lorem", "lorem", None, None, report.entries)
 
         assert report != twin
         assert twin != report

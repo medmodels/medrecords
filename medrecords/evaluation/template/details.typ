@@ -4,7 +4,6 @@
 #import "numbers.typ": *
 #import "references.typ": reference
 #import "tables.typ": deflist, numeric-cell, sheet
-#import "entries.typ": inputs-line
 
 #let outcome-of(value) = if kind-of(value) == "failure" { "not computed" } else { "completed" }
 
@@ -41,7 +40,7 @@
   items
 }
 
-// "Run details": when the run started, how long it took, the software and its inputs;
+// "Run details": when the run started, how long it took and the software;
 // then every entry with its outcome and duration, the slowest first.
 #let run-details-page() = {
   let items = timings(report.entries, ()).sorted(key: item => -item.at(2))
@@ -50,8 +49,6 @@
     ("Duration", seconds(report.duration)),
     ("Software", "medrecords " + options.version),
   )
-
-  if report.inputs.len() > 0 { facts.push(("Inputs", inputs-line(report.inputs))) }
 
   pagebreak(weak: true)
   heading(level: 1, numbering: none)[Run details]

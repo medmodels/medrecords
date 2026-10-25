@@ -25,7 +25,6 @@ from medrecords.evaluation.entry import (
     DerivationEntry,
     Failure,
     GroupEntry,
-    InputEntry,
     KeyedAnalyticEntry,
     KeyedResult,
 )
@@ -118,15 +117,12 @@ class Run:
         """
         started_at = datetime.now(timezone.utc)
         clock = perf_counter()
-        root = GroupEntry(
-            name, name, description, InputEntry._from_inputs(inputs), None, []
-        )
+        root = GroupEntry(name, name, description, None, [])
         filled = group._filled(self, inputs, (), root)
 
         return Report(
             name,
             description,
-            filled.inputs,
             filled.entries,
             started_at,
             timedelta(seconds=perf_counter() - clock),

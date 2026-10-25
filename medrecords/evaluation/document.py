@@ -36,7 +36,6 @@ class _Options(TypedDict):
     parameter_lines: bool
     failure_details: bool
     run_details: bool
-    table_rows: Optional[int]
     company: Optional[Company]
     version: str
 
@@ -74,7 +73,6 @@ class Document:
     _parameter_lines: bool
     _failure_details: bool
     _run_details: bool
-    _table_rows: Optional[int]
 
     def __init__(
         self,
@@ -90,7 +88,6 @@ class Document:
         parameter_lines: bool = True,
         failure_details: bool = True,
         run_details: bool = False,
-        table_rows: Optional[int] = None,
     ) -> None:
         """Initializes a document of a report.
 
@@ -122,13 +119,9 @@ class Document:
                 message of every failure, or only that the entry was not
                 computed. Defaults to True.
             run_details (bool): Whether to end with an appendix holding when the
-                run started, how long it took, the sizes of its inputs and the
-                time every entry took, and to print the sizes of the inputs and
-                the summary of every derivation under its group. Defaults to
-                False.
-            table_rows (Optional[int]): How many rows of a table to print at
-                most, with a line saying how many follow, or None for every
-                row. Defaults to None.
+                run started, how long it took and the time every entry took, and
+                to print the summary of every derivation under its group.
+                Defaults to False.
         """
         self._report = report
         self._template = None if template is None else Path(template)
@@ -141,7 +134,6 @@ class Document:
         self._parameter_lines = parameter_lines
         self._failure_details = failure_details
         self._run_details = run_details
-        self._table_rows = table_rows
 
     def to_pdf(self, path: Union[str, os.PathLike[str]]) -> None:
         """Typesets the document to a PDF.
@@ -189,7 +181,6 @@ class Document:
             "parameter_lines": self._parameter_lines,
             "failure_details": self._failure_details,
             "run_details": self._run_details,
-            "table_rows": self._table_rows,
             "company": self._company,
             "version": version("medrecords"),
         }

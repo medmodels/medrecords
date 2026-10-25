@@ -3,7 +3,7 @@
 #import "style.typ": *
 #import "numbers.typ": *
 #import "references.typ": breadcrumb, entry-label
-#import "tables.typ": deflist, keyed-table, numeric-cell, stacked-table, tabular
+#import "tables.typ": deflist, kept, keyed-table, numeric-cell, stacked-table, tabular
 #import "charts.typ": counts-chart, histogram-chart, picture, rendered, scatter-chart
 
 #let parameter-lines = options.parameter_lines
@@ -36,6 +36,12 @@
 // "seed: 7 · patients requested: 1500" in the small body face.
 #let parameter-line(mapping) = secondary(mapping.pairs().map(((name, value)) => [#name: #detail(value)]).join[ · ])
 
+#let fact-name(body) = text(size: size.small, weight: "semibold", fill: palette.muted, body)
+
+#let score-title(body) = text(fill: palette.ink, body)
+
+#let chart-title(body) = text(weight: "semibold", fill: palette.ink, body)
+
 #let exception(failure) = secondary[#failure.exception_type: #failure.message]
 
 #let not-computed = secondary[not computed]
@@ -61,10 +67,6 @@
     ) #entry-label(path)]
 }
 
-#let inputs-line(inputs) = stacked(inputs.map(input => [
-  #input.name: #counted(input.node_count, "node"), #counted(input.edge_count, "edge")
-]))
-
 #let derivation-parts(derivation) = {
   let parts = ()
 
@@ -77,9 +79,9 @@
   parts
 }
 
-// The facts under a group's heading: its parameters, the summary of its derivation and
-// its inputs with run_details, and the failure of its derivation.
-#let facts(entry, parent-inputs) = {
+// The facts under a group's heading: its parameters, the summary of its derivation
+// with run_details, and the failure of its derivation.
+#let facts(entry) = {
   let items = ()
 
   if entry.kind == "group" and entry.derivation != none {
@@ -90,7 +92,7 @@
     }
 
     if run-details {
-      items += derivation.summary.pairs().map(((name, value)) => (name, detail(value)))
+      items += derivation.summary.pairs().map(((name, value)) => (name, secondary(detail(value))))
     }
 
     if derivation.failure != none { items.push(("Derivation", failure-text(derivation.failure))) }
@@ -104,15 +106,13 @@
     }
   }
 
-  if run-details and entry.inputs.len() > 0 and entry.inputs != parent-inputs {
-    items.push(("Inputs", inputs-line(entry.inputs)))
-  }
-
   items
 }
 
 #let facts-block(items) = {
-  if items.len() > 0 { block(width: 100%, above: 0pt, below: space.base, sticky: true, deflist(items)) }
+  if items.len() > 0 {
+    block(width: 100%, above: 0pt, below: space.base, sticky: true, deflist(items.map(((name, value)) => (fact-name(name), value))))
+  }
 }
 
 #let description-block(description) = {
@@ -121,30 +121,19 @@
   }
 }
 
-// The description and facts an inline group passes on, or none.
-#let inline-extra(entry, parent-inputs) = {
-  let items = facts(entry, parent-inputs)
+// The description and facts of an inline group, or none.
+#let inline-extra(entry) = {
+  let items = facts(entry)
 
   if entry.description == none and items.len() == 0 { return none }
 
   (description: entry.description, facts: items)
 }
 
-#let extra-parts(extras) = {
-  let parts = ()
-
-  for extra in extras {
-    if extra.description != none { parts.push(secondary(extra.description)) }
-    if extra.facts.len() > 0 { parts.push(deflist(extra.facts)) }
-  }
-
-  parts
-}
-
-// Title, description, parameters and failure of an entry, then what inline groups pass
-// on to it, labelled by the entry's path.
-#let caption(entry, path, extras) = {
-  let items = (emphasized(entry.title),)
+// Title, description, parameters and failure of an entry, labelled by the entry's path;
+// the title set by the given style.
+#let caption(entry, path, titled: emphasized) = {
+  let items = (titled(entry.title),)
 
   if entry.description != none { items.push(secondary(entry.description)) }
 
@@ -153,8 +142,6 @@
   if entry.kind == "analytic" and is-failure(entry.result) and failure-details {
     items.push(exception(entry.result))
   }
-
-  items += extra-parts(extras)
 
   [#block(stacked(items)) #entry-label(path)]
 }
@@ -175,8 +162,9 @@
 
   if value.p_value != none {
     let shown = fixed(value.p_value)
+    let bounded = value.p_value != 0 and calc.abs(value.p_value) < tiniest
 
-    items.push(secondary(if shown.starts-with("<") { [p #shown] } else { [p = #shown] }))
+    items.push(secondary(if bounded { [p #shown] } else { [p = #shown] }))
   }
 
   stacked(items)
@@ -238,16 +226,16 @@
 
     if checked { row.push(check(keyed.result)) }
 
-    row
+    row.map(body => block(breakable: false, body))
   })
 
-  table(
+  kept(table(
     columns: columns,
     align: (left + top, right + top, left + top).slice(0, columns.len()),
-    stroke: (x, y) => (bottom: lines.hairline),
+    stroke: (x, y) => if y > 0 { (top: lines.hairline) },
     inset: (x: cell.across, y: cell.down),
     ..cells.flatten(),
-  )
+  ))
 }
 
 #let keyed-blocks(results, path, within) = stack(
@@ -310,6 +298,8 @@
   failures(results.filter(keyed => is-failure(keyed.result)))
 }
 
+// A heading and what it captions, closed by a hairline under the last piece.
+// A heading and what it captions, padded and closed by a hairline.
 #let wide-block(heading, drawn) = (above, below) => block(
   width: 100%,
   above: above,
@@ -322,13 +312,29 @@
   },
 )
 
+// The description and facts of an inline group, in the listing where the group stands.
+#let note-block(extra) = (above, below) => block(
+  width: 100%,
+  above: above,
+  below: below,
+  inset: (top: space.base, bottom: space.loose),
+  stroke: (bottom: lines.hairline),
+  {
+    description-block(extra.description)
+    facts-block(extra.facts)
+  },
+)
+
 #let wide-result(item, within) = {
+  if "note" in item { return (block: note-block(item.note), kind: "note") }
+
   let entry = item.entry
   let path = item.parent + (entry.name,)
-  let heading = caption(entry, path, item.extras)
+  let heading = caption(entry, path, titled: chart-title)
 
   if entry.kind == "keyed_analytic" {
-    let kind = if entry.results.len() > 0 { kind-of(entry.results.first().result) }
+    let computed = entry.results.filter(keyed => not is-failure(keyed.result))
+    let kind = if computed.len() > 0 { kind-of(computed.first().result) }
 
     return (block: wide-block(heading, keyed-body(entry, path, within)), kind: kind)
   }
@@ -344,7 +350,7 @@
   let entry = item.entry
   let path = item.parent + (entry.name,)
   let cells = (
-    block(breakable: false, caption(entry, path, item.extras)),
+    block(breakable: false, caption(entry, path, titled: score-title)),
     block(breakable: false, {
       rendered(path, kind-of(entry.result), "value")
       result(entry.result)
@@ -356,9 +362,11 @@
   cells
 }
 
-// A group's listing: caption, value and check per row; wide results in full width.
+// A group's listing: a table per run of score rows, each wide result and each inline
+// group's note as a block of its own between them; a run before a wide result sticks
+// to it, so a heading and its scores move to the next page with their chart.
 #let listing(items, within) = {
-  let checked = items.any(item => item.entry.kind == "analytic" and is-assessment(item.entry.result))
+  let checked = items.any(item => "entry" in item and item.entry.kind == "analytic" and is-assessment(item.entry.result))
   let columns = if checked { (1fr, width.value, width.check) } else { (1fr, width.value) }
   let rows(run, sticky) = (above, below) => block(width: 100%, above: above, below: below, sticky: sticky, table(
     columns: columns,
@@ -404,8 +412,9 @@
 }
 
 // The entries of a group as set: its listing, its own analytics and conclusions first,
-// then those of its inline groups; and its groups, an inline group's groups in its place.
-#let collect(entries, path, inputs) = {
+// then those of its inline groups, each after a note of the group's description and
+// facts; and its groups, an inline group's groups in its place.
+#let collect(entries, path) = {
   let own = ()
   let later = ()
   let groups = ()
@@ -413,30 +422,20 @@
   for entry in entries {
     let here = path + (entry.name,)
     let layout = layout-of(entry)
-    let item = (entry: entry, parent: path, inputs: inputs, extras: ())
+    let item = (entry: entry, parent: path)
 
     if entry.kind in leaf-kinds {
       own.push(item)
     } else if layout == "inline" and derivation-failed(entry) {
       groups.push(item + (form: "failed"))
     } else if layout == "inline" {
-      let inner = collect(entry.entries, here, entry.inputs)
-      let leaves = inner.leaves
-      let nested = inner.groups
-      let extra = inline-extra(entry, inputs)
+      let inner = collect(entry.entries, here)
+      let extra = inline-extra(entry)
 
-      if extra != none {
-        let target = nested.position(found => found.form == "section")
+      if extra != none { later.push((note: extra)) }
 
-        if target != none {
-          nested.at(target).extras.insert(0, extra)
-        } else if leaves.len() > 0 {
-          leaves.at(0).extras.insert(0, extra)
-        }
-      }
-
-      later += leaves
-      groups += nested
+      later += inner.leaves
+      groups += inner.groups
     } else if layout == "appendix" {
       groups.push(item + (form: "appendix"))
     } else {
@@ -478,12 +477,7 @@
 
     entry-heading(depth, entry.title, here, numbered)
     description-block(entry.description)
-    facts-block(facts(entry, item.inputs))
-
-    for extra in item.extras {
-      description-block(extra.description)
-      facts-block(extra.facts)
-    }
+    facts-block(facts(entry))
 
     if plain-members(entry) {
       rendered(here, "keyed_group", "table")
@@ -491,7 +485,7 @@
     } else if entry.entries.len() == 0 and not derivation-failed(entry) {
       block(width: 100%, above: 0pt, below: space.base, secondary[no entries])
     } else {
-      render(collect(entry.entries, here, entry.inputs), depth + 1, here, numbered)
+      render(collect(entry.entries, here), depth + 1, here, numbered)
     }
   }
 
@@ -509,16 +503,16 @@
 }
 
 // The groups set as an appendix, in the order they stand, with where they stand.
-#let appendix-groups(entries, path, inputs) = {
+#let appendix-groups(entries, path) = {
   let found = ()
 
   for entry in entries.filter(entry => entry.kind in ("group", "keyed_group")) {
     let here = path + (entry.name,)
 
     if layout-of(entry) == "appendix" {
-      found.push((entry: entry, parent: path, inputs: inputs, extras: ()))
+      found.push((entry: entry, parent: path))
     } else {
-      found += appendix-groups(entry.entries, here, entry.inputs)
+      found += appendix-groups(entry.entries, here)
     }
   }
 
@@ -538,12 +532,12 @@
 
     [#heading(level: 2, numbering: none, breadcrumb(here)) #entry-label(here)]
     description-block(entry.description)
-    facts-block(facts(entry, item.inputs))
+    facts-block(facts(entry))
 
     if entry.entries.len() == 0 and not derivation-failed(entry) {
       block(width: 100%, above: 0pt, below: space.base, secondary[no entries])
     } else {
-      render(collect(entry.entries, here, entry.inputs), 3, here, false)
+      render(collect(entry.entries, here), 3, here, false)
     }
   }
 }

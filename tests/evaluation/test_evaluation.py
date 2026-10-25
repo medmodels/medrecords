@@ -9,7 +9,7 @@ from medrecords.evaluation.analytic import (
     Analytic,
     Derivation,
 )
-from medrecords.evaluation.entry import GroupEntry, InputEntry, Layout
+from medrecords.evaluation.entry import GroupEntry, Layout
 from medrecords.evaluation.evaluation import Evaluation
 from medrecords.evaluation.findings import Findings
 from medrecords.evaluation.group import EvaluationGroup
@@ -157,7 +157,6 @@ class TestEvaluation(unittest.TestCase):
 
         assert evaluation.report(create_medrecord()).entries == []
         first = added.report(create_medrecord()).group("first")
-        assert first.inputs == [InputEntry("medrecord", 1, 0)]
         assert first.analytic("count").result == 1
         assert (
             Evaluation[MedRecord]("amet")
@@ -442,7 +441,6 @@ class TestEvaluation(unittest.TestCase):
         )
 
         assert report.name == "amet"
-        assert report.inputs == [InputEntry("medrecord", 2, 0)]
         assert report.analytic("count").result == 2
         assert [args["path"] for args in progress] == [("count",)]
 

@@ -187,7 +187,7 @@ class Findings(Generic[ScopeType]):
         """
         for path, entries in self._scoped(within):
             for result_path, result in self._results(entries, path):
-                if isinstance(result, kind):
+                if type(result) is kind:
                     yield result_path, result
 
     def failures(
@@ -340,6 +340,7 @@ class Findings(Generic[ScopeType]):
         if not rest:
             return self._keyed_values_at_end(entry, here)
 
+        self._derived(entry, here)
         children = self._children(entry, here)
 
         if self._fans_out(step, entry):
@@ -437,6 +438,26 @@ class Findings(Generic[ScopeType]):
 
         msg = f"{self._path_text(path)} is an analytic, not a group"
         raise NoResultError(msg)
+
+    def _derived(self, entry: Entry, path: EntryPath) -> None:
+        if isinstance(entry, GroupEntry) and entry.derivation is not None:
+            derivations = {(): entry.derivation}
+        elif isinstance(entry, KeyedGroupEntry):
+            derivations = {
+                self._keyed_path((), key): derivation
+                for key, derivation in entry.derivations.items()
+                if self._in_scope(key)
+            }
+        else:
+            derivations = {}
+
+        for keys, derivation in derivations.items():
+            if derivation.failure is not None:
+                msg = (
+                    f"{self._path_text((*path, *keys))} failed: "
+                    f"{derivation.failure.message}"
+                )
+                raise NoResultError(msg)
 
     @staticmethod
     def _fans_out(step: _Step, entry: Entry) -> bool:

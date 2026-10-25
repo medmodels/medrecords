@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import (
     TYPE_CHECKING,
@@ -21,25 +21,10 @@ from typing import (
     Union,
 )
 
-from medrecords.evaluation.analytic import (
-    Arrangement,
-    Assessment,
-    Bins,
-    Counts,
-    Distribution,
-    Histogram,
-    Measurement,
-    Plot,
-    Scale,
-    Scatter,
-    Table,
-    Unit,
-)
-
 if TYPE_CHECKING:
     from graphrecords import Identifier, Value
 
-    from medrecords.evaluation.analytic import Cell, Detail, Statistics
+    from medrecords.evaluation.analytic import Cell, Detail
 
 MemberType = TypeVar("MemberType", bound=Enum)
 
@@ -48,10 +33,17 @@ Json: TypeAlias = Union[str, int, float, bool, List["Json"], Dict[str, "Json"], 
 
 
 class DateTimeDocument(TypedDict):
-    """A datetime in its JSON form."""
+    """A datetime in its JSON form, in its parts and its offset from UTC in seconds."""
 
     kind: Literal["datetime"]
-    value: str
+    year: int
+    month: int
+    day: int
+    hour: int
+    minute: int
+    second: int
+    microsecond: int
+    offset: Optional[int]
 
 
 class DurationDocument(TypedDict):
@@ -107,6 +99,7 @@ class TableDocument(TypedDict):
     headings: List[Identifier]
     rows: List[List[CellDocument]]
     units: List[Optional[str]]
+    printed_rows: Optional[int]
 
 
 class PlotDocument(TypedDict):
@@ -145,6 +138,19 @@ class BinsDocument(TypedDict):
     outside_share: Optional[float]
 
 
+class StatisticsDocument(TypedDict):
+    """The summary statistics of numeric values, in their JSON form."""
+
+    count: int
+    mean: FloatDocument
+    standard_deviation: Optional[FloatDocument]
+    minimum: FloatDocument
+    lower_quartile: FloatDocument
+    median: FloatDocument
+    upper_quartile: FloatDocument
+    maximum: FloatDocument
+
+
 class DistributionHistogramDocument(TypedDict):
     """The histogram drawn of a distribution, in its JSON form."""
 
@@ -153,6 +159,7 @@ class DistributionHistogramDocument(TypedDict):
     below_count: int
     above_count: int
     scale: str
+    whole_numbers: bool
 
 
 class DistributionDocument(TypedDict):
@@ -164,7 +171,7 @@ class DistributionDocument(TypedDict):
     value_label: Optional[str]
     count_label: Optional[str]
     arrangement: Optional[str]
-    statistics: Statistics
+    statistics: StatisticsDocument
     histogram: DistributionHistogramDocument
 
 
@@ -176,8 +183,9 @@ class HistogramDocument(TypedDict):
     counts: List[int]
     below_count: int
     above_count: int
-    statistics: Optional[Statistics]
+    statistics: Optional[StatisticsDocument]
     scale: str
+    whole_numbers: bool
     value_label: Optional[str]
     count_label: Optional[str]
     arrangement: Optional[str]
@@ -246,14 +254,6 @@ ResultDocument: TypeAlias = Union[
 ]
 
 
-class InputDocument(TypedDict):
-    """The size of one input MedRecord in its JSON form."""
-
-    name: str
-    node_count: int
-    edge_count: int
-
-
 class DerivationDocument(TypedDict):
     """The run of a derivation in its JSON form."""
 
@@ -283,7 +283,6 @@ class GroupDocument(TypedDict):
     title: str
     description: Optional[str]
     layout: str
-    inputs: List[InputDocument]
     derivation: Optional[DerivationDocument]
     entries: List[
         Union[
@@ -329,7 +328,6 @@ class KeyedGroupDocument(TypedDict):
     title: str
     description: Optional[str]
     layout: str
-    inputs: List[InputDocument]
     derivations: List[KeyedDerivationDocument]
     entries: List[Union[KeyedAnalyticDocument, "KeyedGroupDocument"]]
 
@@ -340,9 +338,8 @@ class ReportDocument(TypedDict):
     name: str
     description: Optional[str]
     parameters: Dict[str, DetailDocument]
-    started_at: str
+    started_at: DateTimeDocument
     duration: float
-    inputs: List[InputDocument]
     entries: List[
         Union[
             AnalyticDocument,
@@ -573,7 +570,7 @@ class JsonObject:
             msg = f"expected a number at {path}"
             raise ValueError(msg)
 
-        return float(content)
+        return content
 
     @staticmethod
     def _decoded_integer(content: Json, path: str) -> int:
@@ -592,18 +589,10 @@ class JsonObject:
 
         Returns:
             MemberType: The member.
-
-        Raises:
-            ValueError: If the key does not hold the value of a member.
         """
-        content = self.content(key)
-        path = f"{self._path}.{key}"
-
-        try:
-            return enumeration(JsonObject._decoded_string(content, path))
-        except ValueError as error:
-            msg = f"expected a value of {enumeration.__name__} at {path}"
-            raise ValueError(msg) from error
+        return JsonObject._decoded_member(
+            self.content(key), f"{self._path}.{key}", enumeration
+        )
 
     def optional_member(
         self, key: str, enumeration: Type[MemberType]
@@ -619,28 +608,33 @@ class JsonObject:
         """
         return None if self.content(key) is None else self.member(key, enumeration)
 
-    def optional_unit(self, key: str) -> Optional[Unit]:
-        """Reads a key as a unit or null.
-
-        Args:
-            key (str): The key to read.
-
-        Returns:
-            Optional[Unit]: The unit, or None.
-        """
-        content = self.content(key)
-
-        if content is None:
-            return None
-
-        return JsonObject._decoded_unit(content, f"{self._path}.{key}")
+    @staticmethod
+    def _decoded_member(
+        content: Json, path: str, enumeration: Type[MemberType]
+    ) -> MemberType:
+        try:
+            return enumeration(JsonObject._decoded_string(content, path))
+        except ValueError as error:
+            msg = f"expected a value of {enumeration.__name__} at {path}"
+            raise ValueError(msg) from error
 
     @staticmethod
-    def _decoded_datetime(text: str, path: str) -> datetime:
+    def _decoded_datetime(document: JsonObject) -> datetime:
+        offset = document.optional_integer("offset")
+
         try:
-            return datetime.fromisoformat(text)
-        except ValueError as error:
-            msg = f"{error} at {path}"
+            return datetime(
+                document.integer("year"),
+                document.integer("month"),
+                document.integer("day"),
+                document.integer("hour"),
+                document.integer("minute"),
+                document.integer("second"),
+                document.integer("microsecond"),
+                tzinfo=None if offset is None else timezone(timedelta(seconds=offset)),
+            )
+        except (OverflowError, ValueError) as error:
+            msg = f"{error} at {document.path}"
             raise ValueError(msg) from error
 
     @staticmethod
@@ -688,7 +682,7 @@ class JsonObject:
         kind = document.string("kind")
 
         if kind == "datetime":
-            return JsonObject._decoded_datetime(document.string("value"), path)
+            return JsonObject._decoded_datetime(document)
 
         if kind == "timedelta":
             return JsonObject._decoded_timedelta(document)
@@ -710,202 +704,6 @@ class JsonObject:
             )
 
         return JsonObject._decoded_value(content, path)
-
-    @staticmethod
-    def _decoded_unit(content: Json, path: str) -> Unit:
-        try:
-            return Unit(JsonObject._decoded_string(content, path))
-        except ValueError as error:
-            msg = f"expected a unit at {path}"
-            raise ValueError(msg) from error
-
-    def _table(self) -> Table:
-        headings = [
-            JsonObject._decoded_identifier(heading, f"{self._path}.headings[{index}]")
-            for index, heading in enumerate(self.sequence("headings"))
-        ]
-        rows = [
-            [
-                JsonObject._decoded_cell(cell, f"{self._path}.rows")
-                for cell in JsonObject._decoded_sequence(row, f"{self._path}.rows")
-            ]
-            for row in self.sequence("rows")
-        ]
-
-        units = [
-            None
-            if content is None
-            else JsonObject._decoded_unit(content, f"{self._path}.units[{index}]")
-            for index, content in enumerate(self.sequence("units"))
-        ]
-
-        if len(units) != len(headings):
-            msg = f"expected one unit per heading at {self._path}.units"
-            raise ValueError(msg)
-
-        try:
-            return Table(
-                headings,
-                rows,
-                units={
-                    heading: unit
-                    for heading, unit in zip(headings, units, strict=True)
-                    if unit is not None
-                },
-            )
-        except ValueError as error:
-            msg = f"{error} at {self._path}"
-            raise ValueError(msg) from error
-
-    def _plot(self) -> Plot:
-        return Plot(self.string("svg"))
-
-    def _measurement(self) -> Measurement:
-        return Measurement(
-            self.number("value"),
-            self.optional_number("lower"),
-            self.optional_number("upper"),
-            self.optional_number("p_value"),
-            unit=self.optional_unit("unit"),
-        )
-
-    def _assessment(self) -> Assessment:
-        return Assessment(
-            JsonObject._decoded_value(self.content("value"), f"{self._path}.value"),
-            self.string("requirement_label"),
-            passed=self.boolean("passed"),
-            unit=self.optional_unit("unit"),
-        )
-
-    def _distribution(self) -> Distribution:
-        values = [
-            JsonObject._decoded_number(value, f"{self._path}.values")
-            for value in self.sequence("values")
-        ]
-        bins = self.optional_document("bins")
-
-        try:
-            return Distribution(
-                values,
-                bins=None if bins is None else bins._bins(),
-                value_label=self.optional_string("value_label"),
-                count_label=self.optional_string("count_label"),
-                arrangement=self.optional_member("arrangement", Arrangement),
-            )
-        except ValueError as error:
-            msg = f"{error} at {self._path}"
-            raise ValueError(msg) from error
-
-    def _bins(self) -> Bins:
-        try:
-            return Bins(
-                count=self.optional_integer("count"),
-                scale=self.optional_member("scale", Scale),
-                outside_share=self.optional_number("outside_share"),
-            )
-        except ValueError as error:
-            msg = f"{error} at {self._path}"
-            raise ValueError(msg) from error
-
-    def _histogram(self) -> Histogram:
-        edges = [
-            JsonObject._decoded_number(edge, f"{self._path}.edges")
-            for edge in self.sequence("edges")
-        ]
-        counts = [
-            JsonObject._decoded_integer(count, f"{self._path}.counts")
-            for count in self.sequence("counts")
-        ]
-        statistics = self.optional_document("statistics")
-
-        try:
-            return Histogram(
-                edges,
-                counts,
-                below_count=self.integer("below_count"),
-                above_count=self.integer("above_count"),
-                statistics=None if statistics is None else statistics._statistics(),
-                scale=self.member("scale", Scale),
-                value_label=self.optional_string("value_label"),
-                count_label=self.optional_string("count_label"),
-                arrangement=self.optional_member("arrangement", Arrangement),
-            )
-        except ValueError as error:
-            msg = f"{error} at {self._path}"
-            raise ValueError(msg) from error
-
-    def _statistics(self) -> Statistics:
-        return {
-            "count": self.integer("count"),
-            "mean": self.number("mean"),
-            "standard_deviation": self.number("standard_deviation"),
-            "minimum": self.number("minimum"),
-            "lower_quartile": self.number("lower_quartile"),
-            "median": self.number("median"),
-            "upper_quartile": self.number("upper_quartile"),
-            "maximum": self.number("maximum"),
-        }
-
-    def _counts(self) -> Counts:
-        counts: Dict[Value, int] = {}
-
-        for index, item in enumerate(self.sequence("counts")):
-            document = JsonObject(item, f"{self._path}.counts[{index}]")
-            value = JsonObject._decoded_value(
-                document.content("value"), f"{document.path}.value"
-            )
-            counts[value] = document.integer("count")
-
-        try:
-            return Counts(
-                counts,
-                self.integer("total"),
-                value_label=self.optional_string("value_label"),
-                count_label=self.optional_string("count_label"),
-                remainder_label=self.optional_string("remainder_label"),
-                arrangement=self.optional_member("arrangement", Arrangement),
-            )
-        except ValueError as error:
-            msg = f"{error} at {self._path}"
-            raise ValueError(msg) from error
-
-    def _scatter(self) -> Scatter:
-        points: List[Tuple[float, float]] = []
-
-        for index, item in enumerate(self.sequence("points")):
-            path = f"{self._path}.points[{index}]"
-            coordinates = JsonObject._decoded_sequence(item, path)
-
-            if len(coordinates) != 2:
-                msg = f"expected two coordinates at {path}"
-                raise ValueError(msg)
-
-            points.append(
-                (
-                    JsonObject._decoded_number(coordinates[0], path),
-                    JsonObject._decoded_number(coordinates[1], path),
-                )
-            )
-
-        labels: Dict[int, str] = {}
-
-        for index, item in enumerate(self.sequence("labels")):
-            document = JsonObject(item, f"{self._path}.labels[{index}]")
-            labels[document.integer("index")] = document.string("label")
-
-        try:
-            return Scatter(
-                points,
-                x_label=self.string("x_label"),
-                y_label=self.string("y_label"),
-                x_scale=self.member("x_scale", Scale),
-                y_scale=self.member("y_scale", Scale),
-                labels=labels,
-                diagonal=self.boolean("diagonal"),
-            )
-        except ValueError as error:
-            msg = f"{error} at {self._path}"
-            raise ValueError(msg) from error
 
     def _details(self, key: str) -> Dict[str, Detail]:
         details = self.document(key)
@@ -969,7 +767,7 @@ def encode_value(value: Value) -> ValueDocument:
             tagged object.
     """
     if isinstance(value, datetime):
-        return {"kind": "datetime", "value": value.isoformat()}
+        return encode_datetime(value)
 
     if isinstance(value, timedelta):
         return {
@@ -983,6 +781,30 @@ def encode_value(value: Value) -> ValueDocument:
         return encode_float(value)
 
     return value
+
+
+def encode_datetime(value: datetime) -> DateTimeDocument:
+    """Converts a datetime to its JSON form.
+
+    Args:
+        value (datetime): The datetime to convert.
+
+    Returns:
+        DateTimeDocument: The parts of the datetime and its offset from UTC.
+    """
+    offset = value.utcoffset()
+
+    return {
+        "kind": "datetime",
+        "year": value.year,
+        "month": value.month,
+        "day": value.day,
+        "hour": value.hour,
+        "minute": value.minute,
+        "second": value.second,
+        "microsecond": value.microsecond,
+        "offset": None if offset is None else int(offset.total_seconds()),
+    }
 
 
 def encode_cell(cell: Cell) -> CellDocument:
@@ -1014,67 +836,4 @@ def encode_details(details: Mapping[str, Detail]) -> Dict[str, DetailDocument]:
         if isinstance(detail, str) or not isinstance(detail, Sequence)
         else [encode_value(item) for item in detail]
         for name, detail in details.items()
-    }
-
-
-def encode_unit(unit: Optional[Unit]) -> Optional[str]:
-    """Converts a unit to its JSON form.
-
-    Args:
-        unit (Optional[Unit]): The unit, or None.
-
-    Returns:
-        Optional[str]: The value of the unit, or None.
-    """
-    return None if unit is None else unit.value
-
-
-def encode_arrangement(arrangement: Optional[Arrangement]) -> Optional[str]:
-    """Converts an arrangement to its JSON form.
-
-    Args:
-        arrangement (Optional[Arrangement]): The arrangement, or None.
-
-    Returns:
-        Optional[str]: The value of the arrangement, or None.
-    """
-    return None if arrangement is None else arrangement.value
-
-
-def encode_distribution(
-    distribution: Distribution, histogram: Histogram
-) -> DistributionDocument:
-    """Converts a distribution to its JSON form, with the histogram given.
-
-    Args:
-        distribution (Distribution): The distribution to convert.
-        histogram (Histogram): The histogram to write, which is the
-            distribution's own or one over edges shared with others.
-
-    Returns:
-        DistributionDocument: The JSON form of the distribution.
-    """
-    bins = distribution.bins
-
-    return {
-        "kind": "distribution",
-        "values": distribution.values,
-        "bins": None
-        if bins is None
-        else {
-            "count": bins.count,
-            "scale": None if bins.scale is None else bins.scale.value,
-            "outside_share": bins.outside_share,
-        },
-        "value_label": distribution.value_label,
-        "count_label": distribution.count_label,
-        "arrangement": encode_arrangement(distribution.arrangement),
-        "statistics": distribution.statistics,
-        "histogram": {
-            "edges": histogram.edges,
-            "counts": histogram.counts,
-            "below_count": histogram.below_count,
-            "above_count": histogram.above_count,
-            "scale": histogram.scale.value,
-        },
     }

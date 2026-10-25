@@ -17,7 +17,7 @@ from medrecords.evaluation.analytic import (
     Derivation,
     Detail,
 )
-from medrecords.evaluation.entry import Failure, InputEntry, KeyedResult
+from medrecords.evaluation.entry import Failure, KeyedResult
 from medrecords.evaluation.findings import Findings
 from medrecords.evaluation.group import EvaluationGroup
 from medrecords.evaluation.placement import InGroup
@@ -287,7 +287,6 @@ class TestRun(unittest.TestCase):
         report = create_report(group, on_progress=progress.append)
 
         assert report.name == "amet"
-        assert report.inputs == [InputEntry("medrecord", 3, 2)]
         assert [entry.name for entry in report.entries] == [
             "found",
             "count",
@@ -314,23 +313,19 @@ class TestRun(unittest.TestCase):
 
         first = report.group("first")
         assert derivation.calls == 1
-        assert first.inputs == [InputEntry("medrecord", 1, 0)]
         assert first.derivation is not None
         assert first.derivation.failure is None
         assert first.derivation.parameters == {"node": "lorem", "kept": ["lorem"]}
         assert first.derivation.summary == {"kept": 1}
         assert first.analytic("count").result == 1
         assert first.analytic("edges").result == 0
-        assert first.group("nested").inputs == [InputEntry("medrecord", 1, 0)]
         assert first.group("nested").analytic("count").result == 1
         assert first.group("nested").derivation is None
 
         keyed = report.group("nodes")
-        assert keyed.inputs == [InputEntry("medrecord", 3, 2)]
         assert keyed.derivation is not None
         assert keyed.derivation.failure is None
         assert [entry.name for entry in keyed.entries] == ["lorem", "ipsum", "dolor"]
-        assert keyed.group("ipsum").inputs == [InputEntry("medrecord", 1, 0)]
         assert keyed.group("ipsum").derivation is None
         assert keyed.group("ipsum").analytic("count").result == 1
         assert report.group("none").entries == []
@@ -382,7 +377,6 @@ class TestRun(unittest.TestCase):
         )
 
         halves = across.group("halves")
-        assert halves.inputs == [InputEntry("first", 2, 1), InputEntry("second", 1, 0)]
         assert halves.derivation is not None
         count = halves.keyed_analytic("count")
         assert count.title == "count"
@@ -405,7 +399,6 @@ class TestRun(unittest.TestCase):
         assert all(isinstance(keyed.result, Failure) for keyed in untitled.results)
         assert all(keyed.duration == timedelta() for keyed in untitled.results)
         first = halves.keyed_group("first")
-        assert first.inputs == [InputEntry("first", 1, 0)]
         assert list(first.derivations) == ["first", "second"]
         assert first.derivations["first"].summary == {"kept": 1}
         assert isinstance(first.derivations["second"].failure, Failure)
@@ -491,7 +484,6 @@ class TestRun(unittest.TestCase):
         none = report.group("none")
         assert none.derivation is not None
         assert none.derivation.failure is None
-        assert none.inputs == []
         assert none.analytic("nothing").result == 0
 
     def test_invalid_report(self) -> None:
@@ -553,7 +545,6 @@ class TestRun(unittest.TestCase):
         assert isinstance(failing.derivation.failure, Failure)
         assert failing.derivation.failure.message == "incididunt"
         assert failing.entries == []
-        assert failing.inputs == [InputEntry("medrecord", 3, 2)]
         unsummarized = report.group("unsummarized")
         assert unsummarized.derivation is not None
         assert isinstance(unsummarized.derivation.failure, Failure)
@@ -569,7 +560,6 @@ class TestRun(unittest.TestCase):
         assert failing_keys.derivation is not None
         assert isinstance(failing_keys.derivation.failure, Failure)
         assert failing_keys.entries == []
-        assert failing_keys.inputs == [InputEntry("medrecord", 3, 2)]
         assert RaisingTitle().compute(create_medrecord()) == 3
         assert RaisingParameters().compute(create_medrecord()) == 3
         assert (

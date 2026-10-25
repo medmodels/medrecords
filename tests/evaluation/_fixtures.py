@@ -26,22 +26,12 @@ from medrecords.evaluation.entry import (
     DerivationEntry,
     Failure,
     GroupEntry,
-    InputEntry,
     KeyedAnalyticEntry,
     KeyedGroupEntry,
     KeyedResult,
     Layout,
 )
 from medrecords.evaluation.report import Report
-from medrecords.medrecord import MedRecord
-
-
-def create_medrecord() -> MedRecord:
-    return (
-        MedRecord()
-        .add_nodes([("lorem", {}), ("ipsum", {}), ("dolor", {})])
-        .add_edges([("lorem", "ipsum", {}), ("ipsum", "dolor", {})])
-    )
 
 
 def create_plot() -> Plot:
@@ -101,7 +91,6 @@ def create_group_entry() -> GroupEntry:
         "sit",
         "sit",
         "adipiscing",
-        [InputEntry("medrecord", 3, 2)],
         create_derivation_entry(),
         [
             create_analytic_entry(),
@@ -109,7 +98,6 @@ def create_group_entry() -> GroupEntry:
                 "elit",
                 "elit",
                 None,
-                [],
                 None,
                 [create_analytic_entry("consectetur", result="dolor")],
             ),
@@ -141,7 +129,6 @@ def create_keyed_group_entry() -> KeyedGroupEntry:
         "sit",
         "sit",
         "adipiscing",
-        [InputEntry("real", 3, 2), InputEntry("synthetic", 2, 1)],
         {
             "real": create_derivation_entry(),
             "synthetic": DerivationEntry({}, {}, timedelta(), create_failure()),
@@ -152,7 +139,6 @@ def create_keyed_group_entry() -> KeyedGroupEntry:
                 "elit",
                 "elit",
                 None,
-                [],
                 {},
                 [create_keyed_analytic_entry("consectetur")],
             ),
@@ -164,7 +150,6 @@ def create_report() -> Report:
     return Report(
         "lorem",
         None,
-        [InputEntry("medrecord", 3, 2)],
         [
             create_analytic_entry(),
             create_group_entry(),
@@ -172,7 +157,6 @@ def create_report() -> Report:
                 "across",
                 "across",
                 None,
-                [InputEntry("real", 3, 2), InputEntry("synthetic", 2, 1)],
                 create_derivation_entry(),
                 [create_keyed_analytic_entry(), create_keyed_group_entry()],
             ),
@@ -203,7 +187,6 @@ def create_rich_report() -> Report:
     return Report(
         "lorem",
         None,
-        [InputEntry("real", 3, 2)],
         [
             create_analytic_entry("string", result="sed"),
             create_analytic_entry("integer", result=1),
@@ -225,7 +208,6 @@ def create_rich_report() -> Report:
                 "failed",
                 "failed",
                 None,
-                [],
                 DerivationEntry({}, {}, timedelta(seconds=1), create_failure()),
                 [],
             ),
@@ -248,7 +230,6 @@ def create_rich_report() -> Report:
                 "detailed",
                 "detailed",
                 None,
-                [],
                 DerivationEntry(
                     create_details(), {"kept": [1, 2]}, timedelta(seconds=1), None
                 ),
@@ -267,17 +248,17 @@ def create_rich_report() -> Report:
             create_keyed_analytic_entry(
                 "shared",
                 results=[
-                    create_keyed_result(result=Distribution([1.0, 2.0, 3.0])),
+                    create_keyed_result(result=Distribution([1, 2, 3])),
                     create_keyed_result(
                         datetime(2026, 9, 2, tzinfo=timezone.utc),
-                        result=Distribution([8.0, 9.0]),
+                        result=Distribution([8, 9]),
                     ),
                 ],
             ),
             create_keyed_analytic_entry(
                 "unshared",
                 results=[
-                    create_keyed_result(result=Distribution([1.0, 2.0])),
+                    create_keyed_result(result=Distribution([1, 2])),
                     create_keyed_result("synthetic", result=create_failure()),
                 ],
             ),
@@ -367,7 +348,6 @@ def create_rich_report() -> Report:
                 "inline",
                 "Inline",
                 None,
-                [],
                 None,
                 [create_analytic_entry()],
                 layout=Layout.Inline,
@@ -376,7 +356,6 @@ def create_rich_report() -> Report:
                 "appendix",
                 "Appendix",
                 None,
-                [],
                 {},
                 [create_keyed_analytic_entry()],
                 layout=Layout.Appendix,

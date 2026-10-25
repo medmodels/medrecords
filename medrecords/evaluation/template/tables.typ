@@ -4,19 +4,19 @@
 #import "numbers.typ": *
 #import "references.typ": reference
 
-#let table-rows = options.table_rows
-
 #let numeric-cell(body) = text(number-width: "tabular", body)
 
-// One table style: a tinted header row repeated on every page, hairlines between rows.
+// One table style: a tinted header row repeated on every page, hairlines between the
+// body rows, in the small face.
 #let sheet(columns, aligns, headings, cells) = {
   show table.cell.where(y: 0): set text(weight: "semibold", fill: palette.navy)
+  set text(size: size.small)
 
   table(
     columns: columns,
     align: aligns.map(side => side + top),
     fill: (x, y) => if y == 0 { palette.tint } else { none },
-    stroke: (x, y) => if y == 0 { none } else { (bottom: lines.hairline) },
+    stroke: (x, y) => if y > 1 { (top: lines.hairline) },
     inset: (x: cell.across, y: cell.down),
     table.header(..headings, repeat: true),
     ..cells,
@@ -31,46 +31,31 @@
   ..items.map(((name, value)) => (text(fill: palette.muted, name), value)).flatten(),
 )
 
-#let fitted(build) = layout(available => {
-  let natural = measure(build(size.body)).width
-
-  if natural <= available.width { return build(size.body) }
-
-  let smaller = size.body * (available.width / natural)
-  let narrowed = measure(build(smaller)).width
-
-  if narrowed <= available.width { return build(smaller) }
-
-  build(smaller * (available.width / narrowed))
-})
+// A block that breaks across pages only when it is taller than a page.
+#let kept(body) = layout(available => block(breakable: measure(body, width: available.width).height > available.height, body))
 
 #let is-path(value) = kind-of(value) == "path"
 
-#let cell-length(value) = {
-  if type(value) == str { value.clusters().len() } else if is-path(value) {
-    value.names.map(name => str(name).clusters().len() + 3).sum(default: 0)
-  } else { 0 }
-}
-
 #let column-of(rows, index) = rows.map(row => row.at(index))
 
-#let column-aligns(count, rows) = range(count).map(index => {
+// A column is numeric when every value it holds is a number.
+#let numeric-columns(count, rows) = range(count).map(index => {
   let values = column-of(rows, index).filter(value => value != none and kind-of(value) != "failure")
 
-  if values.len() > 0 and numeric(values.first()) { right } else { left }
+  values.len() > 0 and values.all(numeric)
 })
 
-#let column-widths(headings, rows) = range(headings.len()).map(index => {
-  let longest = calc.max(str(headings.at(index)).clusters().len(), ..column-of(rows, index).map(cell-length))
+// Numeric columns are set to the right, as wide as their numbers and heading; the
+// columns of text share the rest of the width.
+#let column-aligns(numerics) = numerics.map(is-numeric => if is-numeric { right } else { left })
 
-  if longest > longest-cell { width.cell } else { auto }
-})
+#let column-widths(numerics) = numerics.map(is-numeric => if is-numeric { auto } else { 1fr })
 
 // One cell of a table: a path as a breadcrumb, a null as an empty cell.
 #let table-cell(value, unit, duration, places, within) = {
   if is-path(value) { return reference(value.names, within) }
 
-  let shown = in-unit(value, unit, duration: duration, places: places, empty: [])
+  let shown = in-unit(value, unit, duration: duration, places: places, empty: [], aligned: true)
 
   if numeric(value) { numeric-cell(shown) } else { shown }
 }
@@ -83,42 +68,52 @@
   row.enumerate().map(((index, item)) => table-cell(item, value.units.at(index), durations.at(index), places.at(index), within))
 }
 
-#let shrunk(build) = block(above: 0pt, below: 0pt, fitted(text-size => text(size: text-size, build())))
-
 #let omitted-line(omitted) = {
   if omitted > 0 { block(above: space.tight, below: 0pt, secondary[and #counted(omitted, "more row")]) }
 }
 
+#let printed-rows(value) = {
+  if value.printed_rows == none { value.rows } else { value.rows.slice(0, calc.min(value.printed_rows, value.rows.len())) }
+}
+
 // A Table: path cells as breadcrumbs relative to the section it stands in, "none"
-// without rows, "and N more rows" when cut to table_rows.
+// without rows, "and N more rows" when cut to its printed rows. Number formats are
+// chosen over every row, so a cut table formats its numbers as the full one does.
 #let tabular(value, within) = {
   if value.headings.len() == 0 or value.rows.len() == 0 { return secondary[none] }
 
-  let rows = value.rows
-  let omitted = 0
-
-  if table-rows != none and rows.len() > table-rows {
-    omitted = rows.len() - table-rows
-    rows = rows.slice(0, table-rows)
-  }
-
+  let rows = printed-rows(value)
   let headings = value.headings.map(str)
-  let cells = rows.map(row => row-cells(value, rows, row, within)).flatten()
+  let cells = rows.map(row => row-cells(value, value.rows, row, within)).flatten()
 
-  shrunk(() => sheet(column-widths(headings, rows), column-aligns(headings.len(), rows), headings, cells))
-  omitted-line(omitted)
+  let numerics = numeric-columns(headings.len(), rows)
+
+  sheet(column-widths(numerics), column-aligns(numerics), headings, cells)
+  omitted-line(value.rows.len() - rows.len())
 }
 
-// Keyed tables with equal headings as one table, the key in the first column.
+// Keyed tables with equal headings as one table, the key in the first column; each
+// key cut to its printed rows, with a row saying how many of that key follow.
 #let stacked-table(results, within) = {
   let first = results.first().result
   let rows = results.map(keyed => keyed.result.rows).sum(default: ())
   let headings = ("",) + first.headings.map(str)
+  let omitted-row(keyed, printed) = {
+    let omitted = keyed.result.rows.len() - printed.len()
+
+    if omitted > 0 { (table.cell(colspan: headings.len(), secondary[and #counted(omitted, "more row") of #scalar(keyed.key)]),) } else { () }
+  }
   let cells = results
-    .map(keyed => keyed.result.rows.map(row => (scalar(keyed.key),) + row-cells(first, rows, row, within)))
+    .map(keyed => {
+      let printed = printed-rows(keyed.result)
+
+      printed.map(row => (scalar(keyed.key),) + row-cells(first, rows, row, within)).flatten() + omitted-row(keyed, printed)
+    })
     .flatten()
 
-  shrunk(() => sheet(headings.len() * (auto,), (left,) + column-aligns(first.headings.len(), rows), headings, cells))
+  let numerics = (false,) + numeric-columns(first.headings.len(), rows)
+
+  sheet(column-widths(numerics), column-aligns(numerics), headings, cells)
 }
 
 // A section placed across keys whose members report plain values: a row per key, a
@@ -137,7 +132,13 @@
   let shown(value, index) = {
     if kind-of(value) == "failure" { return secondary[not computed] }
 
-    let body = scalar(value, duration: durations.at(index), places: places.at(index), empty: [])
+    let body = scalar(
+      value,
+      duration: durations.at(index),
+      places: places.at(index),
+      empty: [],
+      aligned: true,
+    )
 
     if numeric(value) { numeric-cell(body) } else { body }
   }
@@ -146,5 +147,7 @@
     .map(((key, row)) => (scalar(key),) + row.enumerate().map(((index, value)) => shown(value, index)))
     .flatten()
 
-  shrunk(() => sheet(headings.len() * (auto,), (left,) + column-aligns(members.len(), rows), headings, cells))
+  let numerics = (false,) + numeric-columns(members.len(), rows)
+
+  sheet(column-widths(numerics), column-aligns(numerics), headings, cells)
 }
