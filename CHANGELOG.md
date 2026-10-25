@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-10-25
+
+### Breaking Changes
+
+- general improvement of evaluation engine (#18)
+
+### Features
+
+- general improvement of evaluation engine (#18)
+
 ## [0.2.0] - 2026-10-24
 
 ### Breaking Changes
