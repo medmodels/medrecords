@@ -16,7 +16,7 @@ VENV_PYTHON := $(VENV_BIN)/python
 VENV_UV := $(VENV_BIN)/uv
 UV_LOC := $(shell $(USER_PYTHON) -c "import shutil; print(shutil.which('uv') if shutil.which('uv') else '$(VENV_UV)')")
 
-.PHONY: prepare-venv install install-dev install-tests test test-python-coverage lint format clean docs docs-serve docs-clean
+.PHONY: prepare-venv typst-packages install install-dev install-tests test test-python-coverage lint format clean docs docs-serve docs-clean
 
 .DEFAULT_GOAL := install-dev
 
@@ -33,17 +33,23 @@ else
 	$(MAKE) clean && $(UV_LOC) venv $(VENV_NAME)
 endif
 
+typst-packages: prepare-venv
+	$(UV_LOC) run python scripts/fetch_typst_packages.py
+
 install: prepare-venv
 	$(UV_LOC) sync
 	$(UV_LOC) pip install -e .
+	$(MAKE) typst-packages
 
 install-dev: prepare-venv
 	$(UV_LOC) sync --group dev
 	$(UV_LOC) pip install -e .
+	$(MAKE) typst-packages
 
 install-tests: prepare-venv
 	$(UV_LOC) sync --group tests
 	$(UV_LOC) pip install -e .
+	$(MAKE) typst-packages
 
 install-docs: prepare-venv
 	$(UV_LOC) sync --group docs

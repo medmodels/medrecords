@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from traceback import format_exception
 from typing import (
     TYPE_CHECKING,
+    Callable,
     Dict,
     Final,
     Iterator,
@@ -30,8 +32,11 @@ from medrecords.evaluation._json import (
     KeyedResultDocument,
     ResultDocument,
     copy_details,
+    encode_arrangement,
+    encode_cell,
     encode_details,
     encode_distribution,
+    encode_float,
     encode_unit,
     encode_value,
 )
@@ -42,6 +47,7 @@ from medrecords.evaluation.analytic import (
     Histogram,
     Measurement,
     Plot,
+    Scatter,
     Table,
 )
 from medrecords.medrecord import MedRecord
@@ -51,13 +57,37 @@ if TYPE_CHECKING:
 
     from graphrecords import Value
 
-    from medrecords.evaluation.analytic import Detail, ReportValue
+    from medrecords.evaluation.analytic import Detail, EntryPath, ReportValue
 
 #: The name a bare MedRecord is recorded under in the inputs of a report.
 _BARE_INPUT_NAME: Final[str] = "medrecord"
 
-#: A type alias for the names leading from the report root to an entry.
-EntryPath: TypeAlias = Tuple["Value", ...]
+
+class Layout(Enum):
+    """Enumeration of how a typeset report sets a group.
+
+    A section has a heading of its own, numbered on the outer three levels and
+    listed in the contents. An inline group has none: its entries join the
+    group it sits in. An appendix group is set after the body, under a heading
+    that reads its path, and a line where it stands names it with its page.
+    """
+
+    Section = "section"
+    Inline = "inline"
+    Appendix = "appendix"
+
+
+#: How each kind of report value is read back from its JSON form.
+_DECODERS: Final[Dict[str, Callable[[JsonObject], ReportValue]]] = {
+    "table": JsonObject._table,
+    "plot": JsonObject._plot,
+    "measurement": JsonObject._measurement,
+    "assessment": JsonObject._assessment,
+    "distribution": JsonObject._distribution,
+    "histogram": JsonObject._histogram,
+    "counts": JsonObject._counts,
+    "scatter": JsonObject._scatter,
+}
 
 
 def _decoded_result(content: Json, path: str) -> Union[ReportValue, Failure]:
@@ -67,42 +97,15 @@ def _decoded_result(content: Json, path: str) -> Union[ReportValue, Failure]:
     document = JsonObject(content, path)
     kind = document.string("kind")
 
-    if kind == "table":
-        return document._table()
-
-    if kind == "plot":
-        return Plot(document.string("svg"))
-
-    if kind == "measurement":
-        return Measurement(
-            document.number("value"),
-            document.optional_number("lower"),
-            document.optional_number("upper"),
-            document.optional_number("p_value"),
-            unit=document.optional_unit("unit"),
-        )
-
-    if kind == "assessment":
-        return Assessment(
-            JsonObject._decoded_value(document.content("value"), f"{path}.value"),
-            document.string("requirement_label"),
-            passed=document.boolean("passed"),
-            unit=document.optional_unit("unit"),
-        )
-
-    if kind == "distribution":
-        return document._distribution()
-
-    if kind == "histogram":
-        return document._histogram()
-
-    if kind == "counts":
-        return document._counts()
-
     if kind == "failure":
         return Failure._from_document(document)
 
-    return JsonObject._decoded_value(content, path)
+    decoder = _DECODERS.get(kind)
+
+    if decoder is None:
+        return JsonObject._decoded_value(content, path)
+
+    return decoder(document)
 
 
 def _encode_result(result: Union[ReportValue, Failure]) -> ResultDocument:
@@ -110,7 +113,7 @@ def _encode_result(result: Union[ReportValue, Failure]) -> ResultDocument:
         return {
             "kind": "table",
             "headings": result.headings,
-            "rows": [[encode_value(cell) for cell in row] for row in result.rows],
+            "rows": [[encode_cell(cell) for cell in row] for row in result.rows],
             "units": [
                 encode_unit(result.units.get(heading)) for heading in result.headings
             ],
@@ -122,10 +125,10 @@ def _encode_result(result: Union[ReportValue, Failure]) -> ResultDocument:
     if isinstance(result, Measurement):
         return {
             "kind": "measurement",
-            "value": result.value,
-            "lower": result.lower,
-            "upper": result.upper,
-            "p_value": result.p_value,
+            "value": encode_float(result.value),
+            "lower": None if result.lower is None else encode_float(result.lower),
+            "upper": None if result.upper is None else encode_float(result.upper),
+            "p_value": None if result.p_value is None else encode_float(result.p_value),
             "unit": encode_unit(result.unit),
         }
 
@@ -149,6 +152,10 @@ def _encode_result(result: Union[ReportValue, Failure]) -> ResultDocument:
             "below_count": result.below_count,
             "above_count": result.above_count,
             "statistics": result.statistics,
+            "scale": result.scale.value,
+            "value_label": result.value_label,
+            "count_label": result.count_label,
+            "arrangement": encode_arrangement(result.arrangement),
         }
 
     if isinstance(result, Counts):
@@ -159,6 +166,25 @@ def _encode_result(result: Union[ReportValue, Failure]) -> ResultDocument:
                 for value, count in result.by_value.items()
             ],
             "total": result.total,
+            "value_label": result.value_label,
+            "count_label": result.count_label,
+            "remainder_label": result.remainder_label,
+            "arrangement": encode_arrangement(result.arrangement),
+        }
+
+    if isinstance(result, Scatter):
+        return {
+            "kind": "scatter",
+            "points": [[x, y] for x, y in result.points],
+            "x_label": result.x_label,
+            "y_label": result.y_label,
+            "x_scale": result.x_scale.value,
+            "y_scale": result.y_scale.value,
+            "labels": [
+                {"index": index, "label": label}
+                for index, label in result.labels.items()
+            ],
+            "diagonal": result.diagonal,
         }
 
     if isinstance(result, Failure):
@@ -686,6 +712,7 @@ class GroupEntry:
     _inputs: List[InputEntry]
     _derivation: Optional[DerivationEntry]
     _entries: List[Entry]
+    _layout: Layout
 
     def __init__(
         self,
@@ -695,6 +722,8 @@ class GroupEntry:
         inputs: Sequence[InputEntry],
         derivation: Optional[DerivationEntry],
         entries: Sequence[Entry],
+        *,
+        layout: Layout = Layout.Section,
     ) -> None:
         """Initializes a group entry.
 
@@ -708,6 +737,8 @@ class GroupEntry:
                 bound the inputs, or None.
             entries (Sequence[Entry]): The entries of the group, in definition
                 order.
+            layout (Layout): How a typeset report sets the group. Defaults to
+                Layout.Section.
         """
         self._name = name
         self._title = title
@@ -715,6 +746,7 @@ class GroupEntry:
         self._inputs = list(inputs)
         self._derivation = derivation
         self._entries = list(entries)
+        self._layout = layout
 
     @classmethod
     def _from_document(cls, document: JsonObject) -> GroupEntry:
@@ -728,6 +760,7 @@ class GroupEntry:
             cls._inputs_from_document(document),
             None if derivation is None else DerivationEntry._from_document(derivation),
             cls._entries_from_document(document),
+            layout=document.member("layout", Layout),
         )
 
     @staticmethod
@@ -769,6 +802,7 @@ class GroupEntry:
             self._inputs,
             self._derivation,
             entries,
+            layout=self._layout,
         )
 
     def _to_document(self) -> GroupDocument:
@@ -778,6 +812,7 @@ class GroupEntry:
             "name": encode_value(self._name),
             "title": self._title,
             "description": self._description,
+            "layout": self._layout.value,
             "inputs": [entry._to_document() for entry in self._inputs],
             "derivation": None if derivation is None else derivation._to_document(),
             "entries": [entry._to_document() for entry in self._entries],
@@ -809,6 +844,15 @@ class GroupEntry:
             Optional[str]: The description, or None for none.
         """
         return self._description
+
+    @property
+    def layout(self) -> Layout:
+        """How a typeset report sets the group.
+
+        Returns:
+            Layout: The layout.
+        """
+        return self._layout
 
     @property
     def inputs(self) -> List[InputEntry]:
@@ -951,8 +995,8 @@ class GroupEntry:
             other (object): The object to compare against.
 
         Returns:
-            bool: True if both hold the same name, inputs, derivation and entries,
-                otherwise False.
+            bool: True if both hold the same name, title, description, layout,
+                inputs, derivation and entries, otherwise False.
         """
         if not isinstance(other, GroupEntry):
             return NotImplemented
@@ -961,6 +1005,7 @@ class GroupEntry:
             self._name == other._name
             and self._title == other._title
             and self._description == other._description
+            and self._layout == other._layout
             and self._inputs == other._inputs
             and self._derivation == other._derivation
             and self._entries == other._entries
@@ -1122,8 +1167,9 @@ class KeyedAnalyticEntry:
     def _to_document(self) -> KeyedAnalyticDocument:
         """Converts the entry to its JSON form.
 
-        When every result is a distribution, their histograms are written over
-        shared bin edges, so that a typeset report draws them on one axis.
+        The histograms of the distributions among the results are written over
+        shared bin edges, so that a typeset report draws them on one axis,
+        unless the distributions declare different scales or outside shares.
 
         Returns:
             KeyedAnalyticDocument: The JSON object holding the entry.
@@ -1141,7 +1187,7 @@ class KeyedAnalyticEntry:
                     strict=True,
                 )
             )
-            if distributions
+            if distributions and Distribution._agreeing(list(distributions.values()))
             else {}
         )
         results = [
@@ -1281,6 +1327,7 @@ class KeyedGroupEntry:
     _inputs: List[InputEntry]
     _derivations: Dict[Value, DerivationEntry]
     _entries: List[KeyedEntry]
+    _layout: Layout
 
     def __init__(
         self,
@@ -1290,6 +1337,8 @@ class KeyedGroupEntry:
         inputs: Sequence[InputEntry],
         derivations: Mapping[Value, DerivationEntry],
         entries: Sequence[KeyedEntry],
+        *,
+        layout: Layout = Layout.Section,
     ) -> None:
         """Initializes an entry of a group run across keyed inputs.
 
@@ -1303,6 +1352,8 @@ class KeyedGroupEntry:
                 derivation that bound the group's inputs, by key.
             entries (Sequence[KeyedEntry]): The entries of the group, in
                 definition order.
+            layout (Layout): How a typeset report sets the group. Defaults to
+                Layout.Section.
         """
         self._name = name
         self._title = title
@@ -1310,6 +1361,7 @@ class KeyedGroupEntry:
         self._inputs = list(inputs)
         self._derivations = dict(derivations)
         self._entries = list(entries)
+        self._layout = layout
 
     @classmethod
     def _from_document(cls, document: JsonObject) -> KeyedGroupEntry:
@@ -1322,6 +1374,7 @@ class KeyedGroupEntry:
             GroupEntry._inputs_from_document(document),
             cls._derivations_from_document(document),
             cls._entries_from_document(document),
+            layout=document.member("layout", Layout),
         )
 
     @staticmethod
@@ -1363,6 +1416,7 @@ class KeyedGroupEntry:
             "name": encode_value(self._name),
             "title": self._title,
             "description": self._description,
+            "layout": self._layout.value,
             "inputs": [entry._to_document() for entry in self._inputs],
             "derivations": [
                 {"key": encode_value(key), "derivation": derivation._to_document()}
@@ -1397,6 +1451,15 @@ class KeyedGroupEntry:
             Optional[str]: The description, or None for none.
         """
         return self._description
+
+    @property
+    def layout(self) -> Layout:
+        """How a typeset report sets the group.
+
+        Returns:
+            Layout: The layout.
+        """
+        return self._layout
 
     @property
     def inputs(self) -> List[InputEntry]:
@@ -1485,8 +1548,8 @@ class KeyedGroupEntry:
             other (object): The object to compare against.
 
         Returns:
-            bool: True if both hold the same name, title, description, inputs,
-                derivations and entries, otherwise False.
+            bool: True if both hold the same name, title, description, layout,
+                inputs, derivations and entries, otherwise False.
         """
         if not isinstance(other, KeyedGroupEntry):
             return NotImplemented
@@ -1495,6 +1558,7 @@ class KeyedGroupEntry:
             self._name == other._name
             and self._title == other._title
             and self._description == other._description
+            and self._layout == other._layout
             and self._inputs == other._inputs
             and self._derivations == other._derivations
             and self._entries == other._entries

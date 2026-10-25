@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, timedelta
+from enum import Enum
 from typing import (
     TYPE_CHECKING,
     Dict,
@@ -13,15 +14,24 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
+    Type,
     TypeAlias,
     TypedDict,
+    TypeVar,
     Union,
 )
 
 from medrecords.evaluation.analytic import (
+    Arrangement,
+    Assessment,
+    Bins,
     Counts,
     Distribution,
     Histogram,
+    Measurement,
+    Plot,
+    Scale,
+    Scatter,
     Table,
     Unit,
 )
@@ -29,7 +39,9 @@ from medrecords.evaluation.analytic import (
 if TYPE_CHECKING:
     from graphrecords import Identifier, Value
 
-    from medrecords.evaluation.analytic import Detail, Statistics
+    from medrecords.evaluation.analytic import Cell, Detail, Statistics
+
+MemberType = TypeVar("MemberType", bound=Enum)
 
 #: A type alias for anything a JSON file can hold.
 Json: TypeAlias = Union[str, int, float, bool, List["Json"], Dict[str, "Json"], None]
@@ -58,15 +70,18 @@ class NonFiniteDocument(TypedDict):
     value: str
 
 
+#: A type alias for a float in its JSON form: the number, or its text when JSON
+#: cannot hold it.
+FloatDocument: TypeAlias = Union[float, NonFiniteDocument]
+
 #: A type alias for a value in its JSON form.
 ValueDocument: TypeAlias = Union[
     str,
     int,
-    float,
+    FloatDocument,
     bool,
     DateTimeDocument,
     DurationDocument,
-    NonFiniteDocument,
     None,
 ]
 
@@ -74,12 +89,23 @@ ValueDocument: TypeAlias = Union[
 DetailDocument: TypeAlias = Union[ValueDocument, List[ValueDocument]]
 
 
+class PathDocument(TypedDict):
+    """The path of an entry in a table cell, in its JSON form."""
+
+    kind: Literal["path"]
+    names: List[ValueDocument]
+
+
+#: A type alias for one table cell in its JSON form.
+CellDocument: TypeAlias = Union[ValueDocument, PathDocument]
+
+
 class TableDocument(TypedDict):
     """A table in its JSON form."""
 
     kind: Literal["table"]
     headings: List[Identifier]
-    rows: List[List[ValueDocument]]
+    rows: List[List[CellDocument]]
     units: List[Optional[str]]
 
 
@@ -94,10 +120,10 @@ class MeasurementDocument(TypedDict):
     """A measurement in its JSON form."""
 
     kind: Literal["measurement"]
-    value: float
-    lower: Optional[float]
-    upper: Optional[float]
-    p_value: Optional[float]
+    value: FloatDocument
+    lower: Optional[FloatDocument]
+    upper: Optional[FloatDocument]
+    p_value: Optional[FloatDocument]
     unit: Optional[str]
 
 
@@ -112,10 +138,21 @@ class AssessmentDocument(TypedDict):
 
 
 class BinsDocument(TypedDict):
-    """The bins of a distribution's histogram in their JSON form."""
+    """The bin settings of a distribution in their JSON form."""
+
+    count: Optional[int]
+    scale: Optional[str]
+    outside_share: Optional[float]
+
+
+class DistributionHistogramDocument(TypedDict):
+    """The histogram drawn of a distribution, in its JSON form."""
 
     edges: List[float]
     counts: List[int]
+    below_count: int
+    above_count: int
+    scale: str
 
 
 class DistributionDocument(TypedDict):
@@ -123,9 +160,12 @@ class DistributionDocument(TypedDict):
 
     kind: Literal["distribution"]
     values: List[float]
-    bin_count: Optional[int]
+    bins: Optional[BinsDocument]
+    value_label: Optional[str]
+    count_label: Optional[str]
+    arrangement: Optional[str]
     statistics: Statistics
-    histogram: BinsDocument
+    histogram: DistributionHistogramDocument
 
 
 class HistogramDocument(TypedDict):
@@ -137,6 +177,10 @@ class HistogramDocument(TypedDict):
     below_count: int
     above_count: int
     statistics: Optional[Statistics]
+    scale: str
+    value_label: Optional[str]
+    count_label: Optional[str]
+    arrangement: Optional[str]
 
 
 class CountDocument(TypedDict):
@@ -152,6 +196,30 @@ class CountsDocument(TypedDict):
     kind: Literal["counts"]
     counts: List[CountDocument]
     total: int
+    value_label: Optional[str]
+    count_label: Optional[str]
+    remainder_label: Optional[str]
+    arrangement: Optional[str]
+
+
+class ScatterLabelDocument(TypedDict):
+    """The label of one point of a scatter, in its JSON form."""
+
+    index: int
+    label: str
+
+
+class ScatterDocument(TypedDict):
+    """A scatter in its JSON form."""
+
+    kind: Literal["scatter"]
+    points: List[List[float]]
+    x_label: str
+    y_label: str
+    x_scale: str
+    y_scale: str
+    labels: List[ScatterLabelDocument]
+    diagonal: bool
 
 
 class FailureDocument(TypedDict):
@@ -173,6 +241,7 @@ ResultDocument: TypeAlias = Union[
     DistributionDocument,
     HistogramDocument,
     CountsDocument,
+    ScatterDocument,
     FailureDocument,
 ]
 
@@ -213,6 +282,7 @@ class GroupDocument(TypedDict):
     name: ValueDocument
     title: str
     description: Optional[str]
+    layout: str
     inputs: List[InputDocument]
     derivation: Optional[DerivationDocument]
     entries: List[
@@ -258,6 +328,7 @@ class KeyedGroupDocument(TypedDict):
     name: ValueDocument
     title: str
     description: Optional[str]
+    layout: str
     inputs: List[InputDocument]
     derivations: List[KeyedDerivationDocument]
     entries: List[Union[KeyedAnalyticDocument, "KeyedGroupDocument"]]
@@ -268,6 +339,7 @@ class ReportDocument(TypedDict):
 
     name: str
     description: Optional[str]
+    parameters: Dict[str, DetailDocument]
     started_at: str
     duration: float
     inputs: List[InputDocument]
@@ -491,6 +563,12 @@ class JsonObject:
 
     @staticmethod
     def _decoded_number(content: Json, path: str) -> float:
+        if isinstance(content, dict):
+            document = JsonObject(content, path)
+
+            if document.string("kind") == "float":
+                return JsonObject._decoded_non_finite(document.string("value"), path)
+
         if isinstance(content, bool) or not isinstance(content, (int, float)):
             msg = f"expected a number at {path}"
             raise ValueError(msg)
@@ -504,6 +582,42 @@ class JsonObject:
             raise ValueError(msg)
 
         return content
+
+    def member(self, key: str, enumeration: Type[MemberType]) -> MemberType:
+        """Reads a key as a member of an enumeration, by its value.
+
+        Args:
+            key (str): The key to read.
+            enumeration (Type[MemberType]): The enumeration.
+
+        Returns:
+            MemberType: The member.
+
+        Raises:
+            ValueError: If the key does not hold the value of a member.
+        """
+        content = self.content(key)
+        path = f"{self._path}.{key}"
+
+        try:
+            return enumeration(JsonObject._decoded_string(content, path))
+        except ValueError as error:
+            msg = f"expected a value of {enumeration.__name__} at {path}"
+            raise ValueError(msg) from error
+
+    def optional_member(
+        self, key: str, enumeration: Type[MemberType]
+    ) -> Optional[MemberType]:
+        """Reads a key as a member of an enumeration or null.
+
+        Args:
+            key (str): The key to read.
+            enumeration (Type[MemberType]): The enumeration.
+
+        Returns:
+            Optional[MemberType]: The member, or None.
+        """
+        return None if self.content(key) is None else self.member(key, enumeration)
 
     def optional_unit(self, key: str) -> Optional[Unit]:
         """Reads a key as a unit or null.
@@ -586,6 +700,18 @@ class JsonObject:
         raise ValueError(msg)
 
     @staticmethod
+    def _decoded_cell(content: Json, path: str) -> Cell:
+        if isinstance(content, dict) and content.get("kind") == "path":
+            document = JsonObject(content, path)
+
+            return tuple(
+                JsonObject._decoded_value(name, f"{path}.names[{index}]")
+                for index, name in enumerate(document.sequence("names"))
+            )
+
+        return JsonObject._decoded_value(content, path)
+
+    @staticmethod
     def _decoded_unit(content: Json, path: str) -> Unit:
         try:
             return Unit(JsonObject._decoded_string(content, path))
@@ -600,7 +726,7 @@ class JsonObject:
         ]
         rows = [
             [
-                JsonObject._decoded_value(cell, f"{self._path}.rows")
+                JsonObject._decoded_cell(cell, f"{self._path}.rows")
                 for cell in JsonObject._decoded_sequence(row, f"{self._path}.rows")
             ]
             for row in self.sequence("rows")
@@ -631,15 +757,52 @@ class JsonObject:
             msg = f"{error} at {self._path}"
             raise ValueError(msg) from error
 
+    def _plot(self) -> Plot:
+        return Plot(self.string("svg"))
+
+    def _measurement(self) -> Measurement:
+        return Measurement(
+            self.number("value"),
+            self.optional_number("lower"),
+            self.optional_number("upper"),
+            self.optional_number("p_value"),
+            unit=self.optional_unit("unit"),
+        )
+
+    def _assessment(self) -> Assessment:
+        return Assessment(
+            JsonObject._decoded_value(self.content("value"), f"{self._path}.value"),
+            self.string("requirement_label"),
+            passed=self.boolean("passed"),
+            unit=self.optional_unit("unit"),
+        )
+
     def _distribution(self) -> Distribution:
         values = [
             JsonObject._decoded_number(value, f"{self._path}.values")
             for value in self.sequence("values")
         ]
-        bin_count = self.optional_integer("bin_count")
+        bins = self.optional_document("bins")
 
         try:
-            return Distribution(values, bin_count)
+            return Distribution(
+                values,
+                bins=None if bins is None else bins._bins(),
+                value_label=self.optional_string("value_label"),
+                count_label=self.optional_string("count_label"),
+                arrangement=self.optional_member("arrangement", Arrangement),
+            )
+        except ValueError as error:
+            msg = f"{error} at {self._path}"
+            raise ValueError(msg) from error
+
+    def _bins(self) -> Bins:
+        try:
+            return Bins(
+                count=self.optional_integer("count"),
+                scale=self.optional_member("scale", Scale),
+                outside_share=self.optional_number("outside_share"),
+            )
         except ValueError as error:
             msg = f"{error} at {self._path}"
             raise ValueError(msg) from error
@@ -662,6 +825,10 @@ class JsonObject:
                 below_count=self.integer("below_count"),
                 above_count=self.integer("above_count"),
                 statistics=None if statistics is None else statistics._statistics(),
+                scale=self.member("scale", Scale),
+                value_label=self.optional_string("value_label"),
+                count_label=self.optional_string("count_label"),
+                arrangement=self.optional_member("arrangement", Arrangement),
             )
         except ValueError as error:
             msg = f"{error} at {self._path}"
@@ -690,7 +857,52 @@ class JsonObject:
             counts[value] = document.integer("count")
 
         try:
-            return Counts(counts, self.integer("total"))
+            return Counts(
+                counts,
+                self.integer("total"),
+                value_label=self.optional_string("value_label"),
+                count_label=self.optional_string("count_label"),
+                remainder_label=self.optional_string("remainder_label"),
+                arrangement=self.optional_member("arrangement", Arrangement),
+            )
+        except ValueError as error:
+            msg = f"{error} at {self._path}"
+            raise ValueError(msg) from error
+
+    def _scatter(self) -> Scatter:
+        points: List[Tuple[float, float]] = []
+
+        for index, item in enumerate(self.sequence("points")):
+            path = f"{self._path}.points[{index}]"
+            coordinates = JsonObject._decoded_sequence(item, path)
+
+            if len(coordinates) != 2:
+                msg = f"expected two coordinates at {path}"
+                raise ValueError(msg)
+
+            points.append(
+                (
+                    JsonObject._decoded_number(coordinates[0], path),
+                    JsonObject._decoded_number(coordinates[1], path),
+                )
+            )
+
+        labels: Dict[int, str] = {}
+
+        for index, item in enumerate(self.sequence("labels")):
+            document = JsonObject(item, f"{self._path}.labels[{index}]")
+            labels[document.integer("index")] = document.string("label")
+
+        try:
+            return Scatter(
+                points,
+                x_label=self.string("x_label"),
+                y_label=self.string("y_label"),
+                x_scale=self.member("x_scale", Scale),
+                y_scale=self.member("y_scale", Scale),
+                labels=labels,
+                diagonal=self.boolean("diagonal"),
+            )
         except ValueError as error:
             msg = f"{error} at {self._path}"
             raise ValueError(msg) from error
@@ -730,6 +942,22 @@ def copy_details(details: Mapping[str, Detail]) -> Dict[str, Detail]:
     }
 
 
+def encode_float(number: float) -> FloatDocument:
+    """Converts a float to its JSON form.
+
+    Args:
+        number (float): The float to convert.
+
+    Returns:
+        FloatDocument: The float itself if it is finite, otherwise its text in
+            a tagged object.
+    """
+    if not math.isfinite(number):
+        return {"kind": "float", "value": str(number)}
+
+    return number
+
+
 def encode_value(value: Value) -> ValueDocument:
     """Converts a value to its JSON form.
 
@@ -751,10 +979,25 @@ def encode_value(value: Value) -> ValueDocument:
             "microseconds": value.microseconds,
         }
 
-    if isinstance(value, float) and not math.isfinite(value):
-        return {"kind": "float", "value": str(value)}
+    if isinstance(value, float):
+        return encode_float(value)
 
     return value
+
+
+def encode_cell(cell: Cell) -> CellDocument:
+    """Converts a table cell to its JSON form.
+
+    Args:
+        cell (Cell): The cell to convert.
+
+    Returns:
+        CellDocument: The value in its JSON form, or the path as a tagged object.
+    """
+    if isinstance(cell, tuple):
+        return {"kind": "path", "names": [encode_value(name) for name in cell]}
+
+    return encode_value(cell)
 
 
 def encode_details(details: Mapping[str, Detail]) -> Dict[str, DetailDocument]:
@@ -786,6 +1029,18 @@ def encode_unit(unit: Optional[Unit]) -> Optional[str]:
     return None if unit is None else unit.value
 
 
+def encode_arrangement(arrangement: Optional[Arrangement]) -> Optional[str]:
+    """Converts an arrangement to its JSON form.
+
+    Args:
+        arrangement (Optional[Arrangement]): The arrangement, or None.
+
+    Returns:
+        Optional[str]: The value of the arrangement, or None.
+    """
+    return None if arrangement is None else arrangement.value
+
+
 def encode_distribution(
     distribution: Distribution, histogram: Histogram
 ) -> DistributionDocument:
@@ -799,10 +1054,27 @@ def encode_distribution(
     Returns:
         DistributionDocument: The JSON form of the distribution.
     """
+    bins = distribution.bins
+
     return {
         "kind": "distribution",
         "values": distribution.values,
-        "bin_count": distribution.bin_count,
+        "bins": None
+        if bins is None
+        else {
+            "count": bins.count,
+            "scale": None if bins.scale is None else bins.scale.value,
+            "outside_share": bins.outside_share,
+        },
+        "value_label": distribution.value_label,
+        "count_label": distribution.count_label,
+        "arrangement": encode_arrangement(distribution.arrangement),
         "statistics": distribution.statistics,
-        "histogram": {"edges": histogram.edges, "counts": histogram.counts},
+        "histogram": {
+            "edges": histogram.edges,
+            "counts": histogram.counts,
+            "below_count": histogram.below_count,
+            "above_count": histogram.above_count,
+            "scale": histogram.scale.value,
+        },
     }

@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Generic, Mapping, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Generic, Mapping, Optional, Tuple
 
+from medrecords.evaluation._json import copy_details
 from medrecords.evaluation._run import OnFailure, Run
 from medrecords.evaluation.analytic import (
     DerivedType,
     InputsType,
     ResultType,
 )
+from medrecords.evaluation.entry import Layout
 from medrecords.evaluation.group import EvaluationGroup, _ConclusionMember
 from medrecords.evaluation.placement import (
     AtRoot,
@@ -22,7 +24,12 @@ if TYPE_CHECKING:
     from graphrecords import Value
 
     from medrecords.evaluation._run import ProgressHandler
-    from medrecords.evaluation.analytic import Analytic, Derivation, ReportValue
+    from medrecords.evaluation.analytic import (
+        Analytic,
+        Derivation,
+        Detail,
+        ReportValue,
+    )
     from medrecords.evaluation.findings import Findings
     from medrecords.evaluation.report import Report
 
@@ -32,37 +39,56 @@ class Evaluation(Generic[InputsType]):
 
     Every ``add_*`` returns a new evaluation; its ``place_*`` sibling returns
     the new evaluation together with a placement, the handle a conclusion of
-    the evaluation reads the member through. The name becomes the name of the
-    report. Members are placed under names that are told apart the way a
-    mapping tells its keys apart.
+    the evaluation reads the member through. The name, the description and the
+    parameters become those of the report. Members are placed under names that
+    are told apart the way a mapping tells its keys apart.
     """
 
     _name: str
     _description: Optional[str]
+    _parameters: Dict[str, Detail]
     _group: EvaluationGroup[InputsType]
 
-    def __init__(self, name: str, description: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        description: Optional[str] = None,
+        *,
+        parameters: Optional[Mapping[str, Detail]] = None,
+    ) -> None:
         """Initializes an empty evaluation.
 
         Args:
             name (str): The name of the evaluation.
             description (Optional[str]): The text under the name of the report.
                 Defaults to None.
+            parameters (Optional[Mapping[str, Detail]]): What the evaluation was
+                configured with, printed with its name and description. Defaults
+                to None.
         """
         self._name = name
         self._description = description
+        self._parameters = {} if parameters is None else copy_details(parameters)
         self._group = EvaluationGroup[InputsType]()
 
     @classmethod
     def _from_group(
-        cls, name: str, description: Optional[str], group: EvaluationGroup[InputsType]
+        cls,
+        name: str,
+        description: Optional[str],
+        parameters: Mapping[str, Detail],
+        group: EvaluationGroup[InputsType],
     ) -> Evaluation[InputsType]:
-        evaluation: Evaluation[InputsType] = cls(name, description)
+        evaluation: Evaluation[InputsType] = cls(
+            name, description, parameters=parameters
+        )
         evaluation._group = group
         return evaluation
 
     def _with_group(self, group: EvaluationGroup[InputsType]) -> Evaluation[InputsType]:
-        return Evaluation._from_group(self._name, self._description, group)
+        return Evaluation._from_group(
+            self._name, self._description, self._parameters, group
+        )
 
     def add_analytic(
         self,
@@ -123,6 +149,8 @@ class Evaluation(Generic[InputsType]):
         group: EvaluationGroup[InputsType],
         title: Optional[str] = None,
         description: Optional[str] = None,
+        *,
+        layout: Layout = Layout.Section,
     ) -> Evaluation[InputsType]:
         """Places a group over the same inputs.
 
@@ -133,12 +161,14 @@ class Evaluation(Generic[InputsType]):
                 None for the name. Defaults to None.
             description (Optional[str]): The text under the heading. Defaults to
                 None.
+            layout (Layout): How a typeset report sets the group. Defaults to
+                Layout.Section.
 
         Returns:
             Evaluation[InputsType]: An evaluation with the group as its last
                 member.
         """
-        return self.place_group(name, group, title, description)[0]
+        return self.place_group(name, group, title, description, layout=layout)[0]
 
     def place_group(
         self,
@@ -146,6 +176,8 @@ class Evaluation(Generic[InputsType]):
         group: EvaluationGroup[InputsType],
         title: Optional[str] = None,
         description: Optional[str] = None,
+        *,
+        layout: Layout = Layout.Section,
     ) -> Tuple[Evaluation[InputsType], GroupPlacement[AtRoot]]:
         """Places a group over the same inputs and hands back its placement.
 
@@ -156,13 +188,17 @@ class Evaluation(Generic[InputsType]):
                 None for the name. Defaults to None.
             description (Optional[str]): The text under the heading. Defaults to
                 None.
+            layout (Layout): How a typeset report sets the group. Defaults to
+                Layout.Section.
 
         Returns:
             Tuple[Evaluation[InputsType], GroupPlacement[AtRoot]]: An evaluation
                 with the group as its last member, and the placement converting
                 the placements made inside the group.
         """
-        root, placement = self._group.place_group(name, group, title, description)
+        root, placement = self._group.place_group(
+            name, group, title, description, layout=layout
+        )
 
         return self._with_group(root), GroupPlacement(placement._step)
 
@@ -173,6 +209,8 @@ class Evaluation(Generic[InputsType]):
         group: EvaluationGroup[DerivedType],
         title: Optional[str] = None,
         description: Optional[str] = None,
+        *,
+        layout: Layout = Layout.Section,
     ) -> Evaluation[InputsType]:
         """Places a group over inputs a derivation computes once per run.
 
@@ -186,12 +224,16 @@ class Evaluation(Generic[InputsType]):
                 or None for the name. Defaults to None.
             description (Optional[str]): The text under the heading. Defaults to
                 None.
+            layout (Layout): How a typeset report sets the group. Defaults to
+                Layout.Section.
 
         Returns:
             Evaluation[InputsType]: An evaluation with the nested group as its
                 last member.
         """
-        return self.place_group_over(name, derivation, group, title, description)[0]
+        return self.place_group_over(
+            name, derivation, group, title, description, layout=layout
+        )[0]
 
     def place_group_over(
         self,
@@ -200,6 +242,8 @@ class Evaluation(Generic[InputsType]):
         group: EvaluationGroup[DerivedType],
         title: Optional[str] = None,
         description: Optional[str] = None,
+        *,
+        layout: Layout = Layout.Section,
     ) -> Tuple[Evaluation[InputsType], GroupPlacement[AtRoot]]:
         """Places a group over derived inputs and hands back its placement.
 
@@ -213,6 +257,8 @@ class Evaluation(Generic[InputsType]):
                 or None for the name. Defaults to None.
             description (Optional[str]): The text under the heading. Defaults to
                 None.
+            layout (Layout): How a typeset report sets the group. Defaults to
+                Layout.Section.
 
         Returns:
             Tuple[Evaluation[InputsType], GroupPlacement[AtRoot]]: An evaluation
@@ -220,7 +266,7 @@ class Evaluation(Generic[InputsType]):
                 converting the placements made inside the group.
         """
         root, placement = self._group.place_group_over(
-            name, derivation, group, title, description
+            name, derivation, group, title, description, layout=layout
         )
         return self._with_group(root), GroupPlacement(placement._step)
 
@@ -231,6 +277,8 @@ class Evaluation(Generic[InputsType]):
         group: EvaluationGroup[DerivedType],
         title: Optional[str] = None,
         description: Optional[str] = None,
+        *,
+        layout: Layout = Layout.Section,
     ) -> Evaluation[InputsType]:
         """Places a group over each of the inputs a derivation computes.
 
@@ -244,14 +292,16 @@ class Evaluation(Generic[InputsType]):
                 report, or None for the name. Defaults to None.
             description (Optional[str]): The text under the heading. Defaults to
                 None.
+            layout (Layout): How a typeset report sets the group. Defaults to
+                Layout.Section.
 
         Returns:
             Evaluation[InputsType]: An evaluation with the entries as its last
                 member.
         """
-        return self.place_group_over_each(name, derivation, group, title, description)[
-            0
-        ]
+        return self.place_group_over_each(
+            name, derivation, group, title, description, layout=layout
+        )[0]
 
     def place_group_over_each(
         self,
@@ -260,6 +310,8 @@ class Evaluation(Generic[InputsType]):
         group: EvaluationGroup[DerivedType],
         title: Optional[str] = None,
         description: Optional[str] = None,
+        *,
+        layout: Layout = Layout.Section,
     ) -> Tuple[Evaluation[InputsType], KeyedGroupPlacement[AtRoot]]:
         """Places a group over each derived inputs and hands back its placement.
 
@@ -273,6 +325,8 @@ class Evaluation(Generic[InputsType]):
                 report, or None for the name. Defaults to None.
             description (Optional[str]): The text under the heading. Defaults to
                 None.
+            layout (Layout): How a typeset report sets the group. Defaults to
+                Layout.Section.
 
         Returns:
             Tuple[Evaluation[InputsType], KeyedGroupPlacement[AtRoot]]: An
@@ -281,7 +335,7 @@ class Evaluation(Generic[InputsType]):
                 one value per key.
         """
         root, placement = self._group.place_group_over_each(
-            name, derivation, group, title, description
+            name, derivation, group, title, description, layout=layout
         )
 
         return self._with_group(root), KeyedGroupPlacement(placement._step)
@@ -293,6 +347,8 @@ class Evaluation(Generic[InputsType]):
         group: EvaluationGroup[DerivedType],
         title: Optional[str] = None,
         description: Optional[str] = None,
+        *,
+        layout: Layout = Layout.Section,
     ) -> Evaluation[InputsType]:
         """Places a group across the inputs a derivation computes, by key.
 
@@ -309,12 +365,16 @@ class Evaluation(Generic[InputsType]):
                 or None for the name. Defaults to None.
             description (Optional[str]): The text under the heading. Defaults to
                 None.
+            layout (Layout): How a typeset report sets the group. Defaults to
+                Layout.Section.
 
         Returns:
             Evaluation[InputsType]: An evaluation with the nested group as its
                 last member.
         """
-        return self.place_group_across(name, derivation, group, title, description)[0]
+        return self.place_group_across(
+            name, derivation, group, title, description, layout=layout
+        )[0]
 
     def place_group_across(
         self,
@@ -323,6 +383,8 @@ class Evaluation(Generic[InputsType]):
         group: EvaluationGroup[DerivedType],
         title: Optional[str] = None,
         description: Optional[str] = None,
+        *,
+        layout: Layout = Layout.Section,
     ) -> Tuple[Evaluation[InputsType], KeyedGroupPlacement[AtRoot]]:
         """Places a group across derived inputs and hands back its placement.
 
@@ -336,6 +398,8 @@ class Evaluation(Generic[InputsType]):
                 or None for the name. Defaults to None.
             description (Optional[str]): The text under the heading. Defaults to
                 None.
+            layout (Layout): How a typeset report sets the group. Defaults to
+                Layout.Section.
 
         Returns:
             Tuple[Evaluation[InputsType], KeyedGroupPlacement[AtRoot]]: An
@@ -344,7 +408,7 @@ class Evaluation(Generic[InputsType]):
                 one value per key.
         """
         root, placement = self._group.place_group_across(
-            name, derivation, group, title, description
+            name, derivation, group, title, description, layout=layout
         )
 
         return self._with_group(root), KeyedGroupPlacement(placement._step)
@@ -433,7 +497,7 @@ class Evaluation(Generic[InputsType]):
             Report: The report of the run.
         """
         return Run(on_failure, on_progress).report(
-            self._name, self._description, self._group, inputs
+            self._name, self._description, self._parameters, self._group, inputs
         )
 
     def __repr__(self) -> str:

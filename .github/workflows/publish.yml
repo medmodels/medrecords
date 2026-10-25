@@ -49,6 +49,9 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
 
+      - name: Download Typst packages
+        run: uv run python scripts/fetch_typst_packages.py
+
       - name: Build package
         run: uv build
 

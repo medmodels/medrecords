@@ -6,19 +6,25 @@ import json
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
+    Dict,
     Iterator,
     List,
+    Mapping,
     Optional,
     Sequence,
     Tuple,
     Union,
 )
 
-from medrecords.evaluation._json import JsonObject, ReportDocument
+from medrecords.evaluation._json import (
+    JsonObject,
+    ReportDocument,
+    copy_details,
+    encode_details,
+)
 from medrecords.evaluation.entry import (
     AnalyticEntry,
     Entry,
-    EntryPath,
     GroupEntry,
     InputEntry,
     KeyedAnalyticEntry,
@@ -33,6 +39,7 @@ if TYPE_CHECKING:
 
     from graphrecords import Value
 
+    from medrecords.evaluation.analytic import Detail, EntryPath
     from medrecords.evaluation.placement import AtRoot
 
 
@@ -40,6 +47,7 @@ class Report:
     """The report of one run: the entries of its root group, timed."""
 
     _name: str
+    _parameters: Dict[str, Detail]
     _root: GroupEntry
     _started_at: datetime
     _duration: timedelta
@@ -52,6 +60,8 @@ class Report:
         entries: Sequence[Entry],
         started_at: datetime,
         duration: timedelta,
+        *,
+        parameters: Optional[Mapping[str, Detail]] = None,
     ) -> None:
         """Initializes a report.
 
@@ -64,8 +74,11 @@ class Report:
                 definition order.
             started_at (datetime): When the run started.
             duration (timedelta): How long the run took.
+            parameters (Optional[Mapping[str, Detail]]): What the evaluation was
+                configured with. Defaults to None.
         """
         self._name = name
+        self._parameters = {} if parameters is None else copy_details(parameters)
         self._root = GroupEntry(name, name, description, inputs, None, entries)
         self._started_at = started_at
         self._duration = duration
@@ -96,6 +109,7 @@ class Report:
             JsonObject._decoded_duration(
                 document.number("duration"), "report.duration"
             ),
+            parameters=document._details("parameters"),
         )
 
     def to_json(self, path: Union[str, os.PathLike[str]]) -> None:
@@ -113,6 +127,7 @@ class Report:
         return {
             "name": self.name,
             "description": self.description,
+            "parameters": encode_details(self._parameters),
             "started_at": self._started_at.isoformat(),
             "duration": self._duration.total_seconds(),
             "inputs": [entry._to_document() for entry in self.inputs],
@@ -136,6 +151,15 @@ class Report:
             Optional[str]: The description, or None for none.
         """
         return self._root.description
+
+    @property
+    def parameters(self) -> Dict[str, Detail]:
+        """What the evaluation was configured with.
+
+        Returns:
+            Dict[str, Detail]: The parameters by name.
+        """
+        return copy_details(self._parameters)
 
     @property
     def inputs(self) -> List[InputEntry]:
@@ -248,7 +272,7 @@ class Report:
         Returns:
             Findings[AtRoot]: The findings of the root group.
         """
-        return Findings(self._root.entries, None, _UNKEYED)
+        return Findings(self._root.entries, None, _UNKEYED, ())
 
     def __eq__(self, other: object) -> bool:
         """Compares the Report with another one by its contents.
@@ -257,14 +281,15 @@ class Report:
             other (object): The object to compare against.
 
         Returns:
-            bool: True if both hold the same entries, inputs, start and duration,
-                otherwise False.
+            bool: True if both hold the same entries, inputs, parameters, start
+                and duration, otherwise False.
         """
         if not isinstance(other, Report):
             return NotImplemented
 
         return (
             self._root == other._root
+            and self._parameters == other._parameters
             and self._started_at == other._started_at
             and self._duration == other._duration
         )

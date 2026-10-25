@@ -7,13 +7,17 @@ from typing import Dict, List, Mapping, Optional, Union
 from graphrecords import Value
 
 from medrecords.evaluation.analytic import (
+    Arrangement,
     Assessment,
+    Bins,
     Counts,
     Detail,
     Distribution,
     Histogram,
     Measurement,
     Plot,
+    Scale,
+    Scatter,
     Table,
     Unit,
 )
@@ -26,6 +30,7 @@ from medrecords.evaluation.entry import (
     KeyedAnalyticEntry,
     KeyedGroupEntry,
     KeyedResult,
+    Layout,
 )
 from medrecords.evaluation.report import Report
 from medrecords.medrecord import MedRecord
@@ -75,6 +80,7 @@ def create_analytic_entry(
         Distribution,
         Histogram,
         Counts,
+        Scatter,
         Failure,
         None,
     ] = 1,
@@ -308,7 +314,75 @@ def create_rich_report() -> Report:
                     0.75, "at least 50.0%", passed=True, unit=Unit.Points
                 ),
             ),
+            create_analytic_entry(
+                "scatter",
+                result=Scatter(
+                    [(0.1, 0.2), (0.5, 0.4)],
+                    x_label="share of real patients",
+                    y_label="share of synthetic patients",
+                    x_scale=Scale.Logarithmic,
+                    labels={1: "lorem"},
+                    diagonal=True,
+                ),
+            ),
+            create_analytic_entry(
+                "paths",
+                result=Table(
+                    ["entry", "value"], [[("sit", 2024), 1], [("across",), None]]
+                ),
+            ),
+            create_analytic_entry(
+                "labelled",
+                result=Histogram.from_values(
+                    [2.0, 20.0],
+                    [1.0, 10.0, 100.0],
+                    scale=Scale.Logarithmic,
+                    value_label="dose in mg",
+                    count_label="prescriptions",
+                    arrangement=Arrangement.Panels,
+                ),
+            ),
+            create_analytic_entry(
+                "binned",
+                result=Distribution(
+                    [1.0, 20.0, 300.0],
+                    bins=Bins(count=3, scale=Scale.Logarithmic, outside_share=0.0),
+                    value_label="days",
+                    count_label="intervals",
+                    arrangement=Arrangement.Overlay,
+                ),
+            ),
+            create_analytic_entry(
+                "categories",
+                result=Counts(
+                    {"sit": 2},
+                    3,
+                    value_label="diagnosis",
+                    count_label="patients",
+                    remainder_label="less frequent values",
+                    arrangement=Arrangement.Overlay,
+                ),
+            ),
+            GroupEntry(
+                "inline",
+                "Inline",
+                None,
+                [],
+                None,
+                [create_analytic_entry()],
+                layout=Layout.Inline,
+            ),
+            KeyedGroupEntry(
+                "appendix",
+                "Appendix",
+                None,
+                [],
+                {},
+                [create_keyed_analytic_entry()],
+                layout=Layout.Appendix,
+            ),
         ],
         datetime(2026, 9, 2, 10, 0, tzinfo=timezone.utc),
         timedelta(seconds=2),
+        parameters={"seed": 7, "records": ["real", "synthetic"]},
     )

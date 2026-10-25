@@ -82,9 +82,14 @@ class TestAttributeRange(unittest.TestCase):
         )
 
     def test_title(self) -> None:
+        assert AttributeRange("amet", SIT, 0, 10).title() == (
+            "Values of amet outside 0 to 10"
+        )
         assert (
-            AttributeRange("amet", SIT, 0, 10).title()
-            == "Values of amet outside the range"
+            AttributeRange("amet", SIT, minimum=0).title() == "Values of amet below 0"
+        )
+        assert AttributeRange("amet", SIT, maximum=10).title() == (
+            "Values of amet above 10"
         )
 
     def test_parameters(self) -> None:
@@ -110,9 +115,7 @@ class TestAttributeUniqueness(unittest.TestCase):
         assert unique.passed
 
     def test_title(self) -> None:
-        assert (
-            AttributeUniqueness("id", SIT).title() == "Elements sharing a value of id"
-        )
+        assert AttributeUniqueness("id", SIT).title() == "Entries sharing a value of id"
 
 
 class TestAttributeOrder(unittest.TestCase):
@@ -128,12 +131,14 @@ class TestAttributeOrder(unittest.TestCase):
         assert on_nodes.requirement_label == "none allowed"
 
     def test_title(self) -> None:
-        assert AttributeOrder("start", "end", SIT).title() == "Order of start and end"
+        assert AttributeOrder("start", "end", SIT).title() == (
+            "Entries with end before start"
+        )
 
     def test_description(self) -> None:
         assert (
             AttributeOrder("start", "end", SIT).description()
-            == "Elements lacking either attribute are left out."
+            == "Entries missing either value are left out."
         )
 
     def test_parameters(self) -> None:

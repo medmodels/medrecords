@@ -1,4 +1,5 @@
 import math
+import re
 import unittest
 from datetime import date, datetime, timedelta
 from typing import BinaryIO, Dict, Literal, Mapping, Optional, Union
@@ -10,7 +11,9 @@ from graphrecords.types import Value
 
 from medrecords.evaluation.analytic import (
     Analytic,
+    Arrangement,
     Assessment,
+    Bins,
     Counts,
     Derivation,
     Detail,
@@ -18,6 +21,8 @@ from medrecords.evaluation.analytic import (
     Histogram,
     Measurement,
     Plot,
+    Scale,
+    Scatter,
     Statistics,
     Table,
     Unit,
@@ -63,6 +68,18 @@ def create_counts() -> Counts:
     return Counts({"dolor": 2, "elit": 1, None: 1}, 5)
 
 
+def create_scatter() -> Scatter:
+    return Scatter(
+        [(0.1, 0.2), (0.5, 0.4), (1.0, 0.9)],
+        x_label="share of real patients",
+        y_label="share of synthetic patients",
+        x_scale=Scale.Logarithmic,
+        y_scale=Scale.Logarithmic,
+        labels={1: "lorem"},
+        diagonal=True,
+    )
+
+
 class AmetCount(Analytic[MedRecord, Value]):
     def compute(self, medrecord: MedRecord) -> Union[Value, QueryError]:
         return medrecord.nodes().filter(nodes().in_group("Sit")).count().evaluate()
@@ -94,6 +111,11 @@ class Summarized(Derivation[MedRecord, Dict[str, int]]):
     def derive(self, medrecord: MedRecord) -> Dict[str, int]:
         return {"nodes": medrecord.node_count()}
 
+    def titles(
+        self, medrecord: MedRecord, derived: Dict[str, int], /
+    ) -> Mapping[Value, str]:
+        return {"nodes": f"{derived['nodes']} of {medrecord.node_count()} nodes"}
+
     def parameters(self) -> Mapping[str, Detail]:
         return {"seed": 7}
 
@@ -105,12 +127,19 @@ class SavingFigure:
     def __init__(self) -> None:
         self.format = ""
         self.bbox_inches = ""
+        self.metadata: Dict[str, Optional[str]] = {}
 
     def savefig(
-        self, target: BinaryIO, *, format: str, bbox_inches: Literal["tight"]
+        self,
+        target: BinaryIO,
+        *,
+        format: str,
+        bbox_inches: Literal["tight"],
+        metadata: Dict[str, Optional[str]],
     ) -> None:
         self.format = format
         self.bbox_inches = bbox_inches
+        self.metadata = metadata
         target.write(b"<svg/>")
 
 
@@ -120,6 +149,7 @@ class TestTable(unittest.TestCase):
 
         assert table.headings == ["amet", "elit"]
         assert table.rows == [[1, "sed"], [None, 2.5]]
+        assert Table(["entry"], [[("sit", 1)]]).rows == [[("sit", 1)]]
         assert table.units == {}
         assert Table(["amet"], [[0.5]], units={"amet": Unit.Share}).units == {
             "amet": Unit.Share
@@ -129,7 +159,7 @@ class TestTable(unittest.TestCase):
         }
 
     def test_invalid_init(self) -> None:
-        with pytest.raises(ValueError, match="one value per heading"):
+        with pytest.raises(ValueError, match="one cell per heading"):
             Table(["amet"], [[1, 2]])
 
         with pytest.raises(ValueError, match="every heading must be different"):
@@ -188,6 +218,16 @@ class TestTable(unittest.TestCase):
         assert dataframe["amet"].to_list() == [1, 2]
         assert dataframe["elit"].to_list() == ["sed", None]
         assert Table([2024, "amet"], [[1, 2]]).to_polars().columns == ["2024", "amet"]
+        assert Table(["entry"], [[("sit", 1)], ["elit"]]).to_polars()[
+            "entry"
+        ].to_list() == ["sit / 1", "elit"]
+
+    def test_to_polars_holds_integers_beside_floats_as_floats(self) -> None:
+        dataframe = Table(["amet", "elit"], [[1, True], [0.5, False]]).to_polars()
+
+        assert dataframe["amet"].to_list() == [1.0, 0.5]
+        assert dataframe["amet"].dtype == pl.Float64
+        assert dataframe["elit"].to_list() == [True, False]
 
     def test_headings(self) -> None:
         table = Table(["amet"], [[1]])
@@ -239,6 +279,7 @@ class TestPlot(unittest.TestCase):
         assert plot == Plot("<svg/>")
         assert figure.format == "svg"
         assert figure.bbox_inches == "tight"
+        assert figure.metadata == {"Date": None}
 
     def test_eq(self) -> None:
         assert Plot("<svg/>") == Plot("<svg/>")
@@ -372,14 +413,82 @@ class TestAssessment(unittest.TestCase):
         )
 
 
+class TestBins(unittest.TestCase):
+    def test_init(self) -> None:
+        bins = Bins(count=30, scale=Scale.Logarithmic, outside_share=0.01)
+
+        assert bins.count == 30
+        assert bins.scale is Scale.Logarithmic
+        assert math.isclose(bins.outside_share or 0.0, 0.01)
+        assert Bins().count is None
+        assert Bins().scale is None
+        assert Bins().outside_share is None
+        assert Bins(outside_share=0.0) != Bins()
+
+    def test_invalid_init(self) -> None:
+        with pytest.raises(ValueError, match="at least one bin"):
+            Bins(count=0)
+
+        with pytest.raises(
+            ValueError, match=re.escape("outside share from 0 to below 0.5")
+        ):
+            Bins(outside_share=0.5)
+
+        with pytest.raises(
+            ValueError, match=re.escape("outside share from 0 to below 0.5")
+        ):
+            Bins(outside_share=-0.1)
+
+    def test_count(self) -> None:
+        assert Bins(count=4).count == 4
+
+    def test_scale(self) -> None:
+        assert Bins(scale=Scale.Linear).scale is Scale.Linear
+
+    def test_outside_share(self) -> None:
+        assert math.isclose(Bins(outside_share=0.1).outside_share or 0.0, 0.1)
+
+    def test_describe(self) -> None:
+        assert Bins().describe() == "chosen from the values"
+        assert Bins(count=30).describe() == (
+            "about 30 bars, or one per value for values without decimals that span "
+            "at most 120 numbers"
+        )
+        assert Bins(
+            count=4, scale=Scale.Logarithmic, outside_share=0.01
+        ).describe() == (
+            "about 4 bars, or one per value for values without decimals that span "
+            "at most 16 numbers; logarithmic scale; at most 1.0% of the values "
+            "outside the axis at each end"
+        )
+
+    def test_eq(self) -> None:
+        assert Bins(count=4) == Bins(count=4)
+        assert Bins(count=4) != Bins(count=5)
+        assert Bins(count=4) != Bins(count=4, scale=Scale.Linear)
+        assert Bins(count=4) != Bins(count=4, outside_share=0.1)
+        assert Bins(count=4) != 4
+
+    def test_hash(self) -> None:
+        assert hash(Bins(count=4)) == hash(Bins(count=4))
+        assert len({Bins(), Bins(), Bins(count=2)}) == 2
+
+    def test_repr(self) -> None:
+        assert repr(Bins(count=4, scale=Scale.Linear)) == (
+            "Bins(count=4, scale=<Scale.Linear: 'linear'>, outside_share=None)"
+        )
+
+
 class TestDistribution(unittest.TestCase):
     def test_init(self) -> None:
         distribution = create_distribution()
 
         assert distribution.values == [4.0, 1.0, 3.0, 2.0, 10.0]
         assert distribution.count == 5
-        assert distribution.bin_count is None
-        assert Distribution([1.0, 2.0], 4).bin_count == 4
+        assert distribution.bins is None
+        assert distribution.value_label is None
+        assert distribution.count_label is None
+        assert distribution.arrangement is None
 
         distribution.values.append(0.0)
 
@@ -392,8 +501,20 @@ class TestDistribution(unittest.TestCase):
         with pytest.raises(ValueError, match="must be finite"):
             Distribution([1.0, math.nan])
 
-        with pytest.raises(ValueError, match="at least one bin"):
-            Distribution([1.0], 0)
+    def test_bins(self) -> None:
+        assert Distribution([1.0], bins=Bins(count=4)).bins == Bins(count=4)
+
+    def test_value_label(self) -> None:
+        assert Distribution([1.0], value_label="age").value_label == "age"
+
+    def test_count_label(self) -> None:
+        assert Distribution([1.0], count_label="patients").count_label == "patients"
+
+    def test_arrangement(self) -> None:
+        assert (
+            Distribution([1.0], arrangement=Arrangement.Panels).arrangement
+            is Arrangement.Panels
+        )
 
     def test_mean(self) -> None:
         assert math.isclose(create_distribution().mean, 4.0)
@@ -408,7 +529,6 @@ class TestDistribution(unittest.TestCase):
     def test_lower_quartile(self) -> None:
         assert math.isclose(create_distribution().lower_quartile, 2.0)
         assert math.isclose(Distribution([1.0, 2.0]).lower_quartile, 1.25)
-        assert math.isclose(Distribution([1e308, -1e308]).lower_quartile, -5e307)
 
     def test_median(self) -> None:
         assert math.isclose(create_distribution().median, 3.0)
@@ -417,7 +537,6 @@ class TestDistribution(unittest.TestCase):
     def test_upper_quartile(self) -> None:
         assert math.isclose(create_distribution().upper_quartile, 4.0)
         assert math.isclose(Distribution([1.0, 2.0]).upper_quartile, 1.75)
-        assert math.isclose(Distribution([1e308, -1e308]).upper_quartile, 5e307)
 
     def test_maximum(self) -> None:
         assert math.isclose(create_distribution().maximum, 10.0)
@@ -430,154 +549,206 @@ class TestDistribution(unittest.TestCase):
         assert math.isclose(statistics["standard_deviation"], math.sqrt(12.5))
 
     def test_histogram(self) -> None:
-        assert create_distribution().histogram(3).bins == [
-            {"lower": 0.0, "upper": 5.0, "count": 4},
-            {"lower": 5.0, "upper": 10.0, "count": 0},
-            {"lower": 10.0, "upper": 15.0, "count": 1},
+        histogram = create_distribution().histogram()
+
+        assert histogram.edges == [
+            0.5,
+            1.5,
+            2.5,
+            3.5,
+            4.5,
+            5.5,
+            6.5,
+            7.5,
+            8.5,
+            9.5,
+            10.5,
         ]
-        assert create_distribution().histogram().bins == [
-            {"lower": 0.0, "upper": 5.0, "count": 4},
-            {"lower": 5.0, "upper": 10.0, "count": 0},
-            {"lower": 10.0, "upper": 15.0, "count": 1},
-        ]
-        assert create_distribution().histogram(10).bins == [
-            {"lower": 1.0, "upper": 2.0, "count": 1},
-            {"lower": 2.0, "upper": 3.0, "count": 1},
-            {"lower": 3.0, "upper": 4.0, "count": 1},
-            {"lower": 4.0, "upper": 5.0, "count": 1},
-            {"lower": 5.0, "upper": 6.0, "count": 0},
-            {"lower": 6.0, "upper": 7.0, "count": 0},
-            {"lower": 7.0, "upper": 8.0, "count": 0},
-            {"lower": 8.0, "upper": 9.0, "count": 0},
-            {"lower": 9.0, "upper": 10.0, "count": 0},
-            {"lower": 10.0, "upper": 11.0, "count": 1},
-        ]
-        assert Distribution([0.15, 0.2, 0.31]).histogram(2).bins == [
-            {"lower": 0.1, "upper": 0.2, "count": 1},
-            {"lower": 0.2, "upper": 0.3, "count": 1},
-            {"lower": 0.3, "upper": 0.4, "count": 1},
-        ]
-        assert Distribution([12.0, 30.0]).histogram(1).bins == [
-            {"lower": 0.0, "upper": 20.0, "count": 1},
-            {"lower": 20.0, "upper": 40.0, "count": 1},
-        ]
-        assert Distribution([0.0, 10.0]).histogram(1).bins == [
-            {"lower": 0.0, "upper": 10.0, "count": 1},
-            {"lower": 10.0, "upper": 20.0, "count": 1},
-        ]
-        assert len(Distribution([1.0]).histogram().bins) == 1
-        assert Distribution([2.0, 2.0]).histogram(5).bins == [
-            {"lower": 2.0, "upper": 3.0, "count": 2}
-        ]
-        assert create_distribution().histogram().statistics == create_statistics()
-        assert Distribution([-1e-17, 0.25, 0.5, 1.0]).histogram().bins[0]["count"] == 1
-        assert (
-            Distribution([999999.9999999, 2000000.0]).histogram().bins[0]["count"] == 1
-        )
-        assert Distribution(
-            [-30408.723007846016, -30408.72300784601]
-        ).histogram().bins == [
-            {"lower": -30408.723007846016, "upper": -30408.72300784601, "count": 1},
-            {"lower": -30408.72300784601, "upper": -30408.723007846005, "count": 1},
-        ]
-        assert Distribution([1e10, 1e10 + 1e-6]).histogram().bins == [
-            {"lower": 1e10, "upper": 1e10 + 1e-6, "count": 2}
-        ]
-        assert Distribution([0.0, 5e-324]).histogram().bins == [
-            {"lower": 0.0, "upper": 5e-324, "count": 2}
-        ]
-        assert Distribution([0.7, 0.8, 0.9], 3).histogram() == Distribution(
-            [0.7, 0.8, 0.9]
-        ).histogram(3)
-        assert Distribution([0.7, 0.8, 0.9]).histogram(3).bins == [
-            {"lower": 0.7, "upper": 0.8, "count": 1},
-            {"lower": 0.8, "upper": 0.9, "count": 1},
-            {"lower": 0.9, "upper": 1.0, "count": 1},
+        assert histogram.counts == [1, 1, 1, 1, 0, 0, 0, 0, 0, 1]
+        assert histogram.scale is Scale.Linear
+        assert histogram.statistics == create_statistics()
+        assert create_distribution().histogram(Bins(count=2)).edges == [
+            0.5,
+            1.5,
+            4.5,
+            13.5,
         ]
 
-    def test_invalid_histogram(self) -> None:
-        with pytest.raises(ValueError, match="at least one bin"):
-            create_distribution().histogram(0)
+        labelled = Distribution(
+            [1.0],
+            value_label="age",
+            count_label="patients",
+            arrangement=Arrangement.Overlay,
+        ).histogram()
+
+        assert labelled.value_label == "age"
+        assert labelled.count_label == "patients"
+        assert labelled.arrangement is Arrangement.Overlay
 
     def test_shared_histograms(self) -> None:
-        ages = Distribution([34.0, 41.0, 45.0, 52.0, 67.0])
-        synthetic = Distribution([30.0, 44.0, 46.0, 49.0, 80.0])
-
         assert [
-            histogram.bins
-            for histogram in Distribution.shared_histograms([ages, synthetic], 3)
-        ] == [
-            [
-                {"lower": 20.0, "upper": 40.0, "count": 1},
-                {"lower": 40.0, "upper": 60.0, "count": 3},
-                {"lower": 60.0, "upper": 80.0, "count": 1},
-                {"lower": 80.0, "upper": 100.0, "count": 0},
-            ],
-            [
-                {"lower": 20.0, "upper": 40.0, "count": 1},
-                {"lower": 40.0, "upper": 60.0, "count": 3},
-                {"lower": 60.0, "upper": 80.0, "count": 0},
-                {"lower": 80.0, "upper": 100.0, "count": 1},
-            ],
-        ]
+            histogram.counts
+            for histogram in Distribution.shared_histograms(
+                [Distribution([1.0, 2.0]), Distribution([2.0, 3.0])]
+            )
+        ] == [[1, 1, 0], [0, 1, 1]]
         assert Distribution.shared_histograms([create_distribution()]) == [
             create_distribution().histogram()
         ]
-        assert [
-            histogram.statistics
-            for histogram in Distribution.shared_histograms(
-                [create_distribution(), Distribution([1.0])]
-            )
-        ] == [create_statistics(), Distribution([1.0]).statistics]
-        assert [
-            histogram.bins
-            for histogram in Distribution.shared_histograms(
-                [Distribution([0.15, 0.2], 4), Distribution([0.31])]
-            )
-        ] == [
+
+        logarithmic = Bins(scale=Scale.Logarithmic)
+        assert Distribution.shared_histograms(
+            [Distribution([1.0, 2.0, 3.0, 9.0], bins=logarithmic)]
+        )[0].edges == [0.5, 1.5, 4.5, 13.5]
+        assert Distribution.shared_histograms(
+            [Distribution([0.0, 0.0], bins=logarithmic)]
+        )[0].edges == [-0.5, 0.5]
+
+        counted = Distribution.shared_histograms(
+            [Distribution(range(21))], Bins(count=2)
+        )[0]
+
+        assert counted.scale is Scale.Logarithmic
+        assert counted.edges == [0.5, 1.5, 4.5, 13.5, 40.5]
+        assert counted.counts == [1, 3, 9, 7]
+        assert counted.below_count == 1
+
+        wide = Distribution.shared_histograms(
+            [Distribution(range(21))], Bins(count=2, scale=Scale.Linear)
+        )[0]
+
+        assert wide.scale is Scale.Linear
+        assert wide.edges == [-0.5, 0.5, 10.5, 20.5]
+        assert wide.counts == [1, 10, 10]
+        assert wide.below_count == 0
+        assert Distribution.shared_histograms(
+            [Distribution(range(1, 21))], Bins(count=2, scale=Scale.Linear)
+        )[0].edges == [0.5, 10.5, 20.5]
+        assert Distribution.shared_histograms(
+            [Distribution(range(-10, 11))], Bins(count=2)
+        )[0].edges == [-20.5, -0.5, 19.5]
+        assert Distribution.shared_histograms(
+            [Distribution(range(37, 200))], Bins(count=2, scale=Scale.Logarithmic)
+        )[0].edges == [13.5, 40.5, 121.5, 364.5]
+        assert Distribution.shared_histograms(
+            [Distribution([value + 0.5 for value in range(10)])], Bins(count=5)
+        )[0].edges == [0.0, 2.0, 4.0, 6.0, 8.0, 10.0]
+
+        tailed = Distribution(
+            [0.1, 0.2, 0.5, 1.5, 3.3, 10.5, 40.5, 100.5, 900.5, 5000.5]
+        ).histogram()
+
+        assert tailed.scale is Scale.Logarithmic
+        assert [round(edge, 9) for edge in tailed.edges] == [
+            0.1,
+            1.0,
+            10.0,
+            100.0,
+            1000.0,
+            10000.0,
+        ]
+        assert tailed.counts == [3, 2, 2, 2, 1]
+        assert Distribution(
+            [-1000.5, -10.5, -1.5, -0.5, 0.5, 1.5, 10.5, 1000.5]
+        ).histogram().edges == [-2000.0, -1000.0, 0.0, 1000.0, 2000.0]
+        assert Distribution([1.5, 2.5, 3.5]).histogram(
+            Bins(count=2, scale=Scale.Logarithmic)
+        ).edges == [1.0, 5.0]
+        assert (
+            Distribution([-1.5, -2.5]).histogram(Bins(scale=Scale.Logarithmic)).scale
+            is Scale.Linear
+        )
+        assert (
+            Distribution([-1.5, 0.5, 0.5])
+            .histogram(Bins(scale=Scale.Logarithmic))
+            .scale
+            is Scale.Linear
+        )
+        assert Distribution([1.5] * 999 + [1000.5, 0.1]).histogram().edges == [1.4, 1.6]
+        assert Distribution([2.5]).histogram().edges == [2.25, 2.75]
+        assert Distribution([-0.5] + [0.0] * 500 + [0.5]).histogram().edges == [
+            -0.5,
+            0.5,
+        ]
+
+        trimmed = Distribution([0.5, 0.25, *[1.5] * 1000, 9.5])
+
+        assert trimmed.histogram().edges == [1.4, 1.6]
+        assert trimmed.histogram().below_count == 2
+        assert trimmed.histogram().above_count == 1
+        assert (
+            Distribution(trimmed.values, bins=Bins(outside_share=0.0))
+            .histogram()
+            .below_count
+            == 0
+        )
+        assert Distribution.shared_histograms(
             [
-                {"lower": 0.15, "upper": 0.2, "count": 1},
-                {"lower": 0.2, "upper": 0.25, "count": 1},
-                {"lower": 0.25, "upper": 0.3, "count": 0},
-                {"lower": 0.3, "upper": 0.35, "count": 0},
+                Distribution([1.0, 2.0], bins=Bins(count=1)),
+                Distribution([1.0, 2.0], bins=Bins(count=8)),
             ],
+            Bins(outside_share=0.0),
+        )[0].edges == [0.5, 1.5, 2.5]
+        assert (
+            Distribution.shared_histograms(
+                [
+                    Distribution([1.5], bins=Bins(scale=Scale.Linear)),
+                    Distribution([2.5], bins=Bins(scale=Scale.Logarithmic)),
+                ],
+                Bins(scale=Scale.Linear),
+            )[0].scale
+            is Scale.Linear
+        )
+        assert Distribution.shared_histograms(
             [
-                {"lower": 0.15, "upper": 0.2, "count": 0},
-                {"lower": 0.2, "upper": 0.25, "count": 0},
-                {"lower": 0.25, "upper": 0.3, "count": 0},
-                {"lower": 0.3, "upper": 0.35, "count": 1},
+                Distribution([1.5], bins=Bins(outside_share=0.0)),
+                Distribution([2.5], bins=Bins(outside_share=0.1)),
             ],
-        ]
-        assert [
-            histogram.bins
-            for histogram in Distribution.shared_histograms(
-                [Distribution([2.0, 2.0]), Distribution([2.0])], 5
-            )
-        ] == [
-            [{"lower": 2.0, "upper": 3.0, "count": 2}],
-            [{"lower": 2.0, "upper": 3.0, "count": 1}],
-        ]
-        assert [
-            histogram.bins
-            for histogram in Distribution.shared_histograms(
-                [Distribution([5.0, 6.0]), Distribution([9.0])], 1
-            )
-        ] == [
-            [{"lower": 5.0, "upper": 10.0, "count": 2}],
-            [{"lower": 5.0, "upper": 10.0, "count": 1}],
-        ]
+            Bins(outside_share=0.0),
+        )[0].edges == [1.0, 2.0, 3.0]
 
     def test_invalid_shared_histograms(self) -> None:
         with pytest.raises(ValueError, match="at least one distribution"):
             Distribution.shared_histograms([])
 
-        with pytest.raises(ValueError, match="at least one bin"):
-            Distribution.shared_histograms([create_distribution()], 0)
+        with pytest.raises(ValueError, match="declare different scales"):
+            Distribution.shared_histograms(
+                [
+                    Distribution([1.5], bins=Bins(scale=Scale.Linear)),
+                    Distribution([2.5], bins=Bins(scale=Scale.Logarithmic)),
+                ]
+            )
+
+        with pytest.raises(ValueError, match="declare different outside shares"):
+            Distribution.shared_histograms(
+                [
+                    Distribution([1.5], bins=Bins(outside_share=0.0)),
+                    Distribution([2.5], bins=Bins(outside_share=0.1)),
+                ]
+            )
+
+    def test_agreeing(self) -> None:
+        linear = Distribution([1.0], bins=Bins(scale=Scale.Linear))
+        logarithmic = Distribution([1.0], bins=Bins(scale=Scale.Logarithmic))
+        trimmed = Distribution([1.0], bins=Bins(outside_share=0.1))
+        untrimmed = Distribution([1.0], bins=Bins(outside_share=0.0))
+
+        assert Distribution._agreeing([linear, linear, Distribution([2.0])])
+        assert Distribution._agreeing([trimmed, Distribution([2.0], bins=Bins())])
+        assert not Distribution._agreeing([linear, logarithmic])
+        assert not Distribution._agreeing([trimmed, untrimmed])
 
     def test_eq(self) -> None:
         assert create_distribution() == Distribution([4, 1, 3, 2, 10])
         assert create_distribution() != Distribution([1, 2, 3, 4, 10])
-        assert create_distribution() != Distribution([4, 1, 3, 2, 10], 4)
+        assert create_distribution() != Distribution(
+            [4, 1, 3, 2, 10], bins=Bins(count=4)
+        )
+        assert create_distribution() != Distribution([4, 1, 3, 2, 10], value_label="a")
+        assert create_distribution() != Distribution([4, 1, 3, 2, 10], count_label="a")
+        assert create_distribution() != Distribution(
+            [4, 1, 3, 2, 10], arrangement=Arrangement.Panels
+        )
         assert create_distribution() != [4, 1, 3, 2, 10]
 
     def test_repr(self) -> None:
@@ -596,6 +767,10 @@ class TestHistogram(unittest.TestCase):
         assert Histogram([0, 1], [0]).statistics is None
         assert Histogram([0, 1], [0]).count == 0
         assert Histogram([0, 1], [0]).edges == [0.0, 1.0]
+        assert histogram.scale is Scale.Linear
+        assert histogram.value_label is None
+        assert histogram.count_label is None
+        assert histogram.arrangement is None
 
         histogram.edges.append(15.0)
         histogram.counts.append(0)
@@ -635,6 +810,9 @@ class TestHistogram(unittest.TestCase):
         with pytest.raises(ValueError, match="must be zero or more"):
             Histogram([0.0, 5.0], [1], above_count=-1)
 
+        with pytest.raises(ValueError, match="logarithmic histogram must be above"):
+            Histogram([0.0, 5.0], [1], scale=Scale.Logarithmic)
+
     def test_from_values(self) -> None:
         assert Histogram.from_values([4, 1, 3, 2, 10], [0.0, 5.0, 10.0]) == Histogram(
             [0.0, 5.0, 10.0], [4, 1], statistics=create_statistics()
@@ -652,6 +830,27 @@ class TestHistogram(unittest.TestCase):
         ]
         assert Histogram.from_values([], [0.0, 5.0, 10.0]) == Histogram(
             [0.0, 5.0, 10.0], [0, 0]
+        )
+        assert Histogram.from_values(
+            [2.0, 20.0],
+            [1.0, 10.0, 100.0],
+            scale=Scale.Logarithmic,
+            value_label="dose in mg",
+            count_label="prescriptions",
+            arrangement=Arrangement.Panels,
+        ) == Histogram(
+            [1.0, 10.0, 100.0],
+            [1, 1],
+            statistics=Distribution([2.0, 20.0]).statistics,
+            scale=Scale.Logarithmic,
+            value_label="dose in mg",
+            count_label="prescriptions",
+            arrangement=Arrangement.Panels,
+        )
+        assert Histogram.from_values(
+            [], [1.0, 10.0], scale=Scale.Logarithmic, value_label="dose in mg"
+        ) == Histogram(
+            [1.0, 10.0], [0], scale=Scale.Logarithmic, value_label="dose in mg"
         )
 
     def test_invalid_from_values(self) -> None:
@@ -679,6 +878,27 @@ class TestHistogram(unittest.TestCase):
     def test_statistics(self) -> None:
         assert create_histogram().statistics == create_statistics()
         assert Histogram([0.0, 1.0], [0]).statistics is None
+
+    def test_scale(self) -> None:
+        assert (
+            Histogram([1.0, 2.0], [1], scale=Scale.Logarithmic).scale
+            is Scale.Logarithmic
+        )
+
+    def test_value_label(self) -> None:
+        assert Histogram([1.0, 2.0], [1], value_label="days").value_label == "days"
+
+    def test_count_label(self) -> None:
+        assert (
+            Histogram([1.0, 2.0], [1], count_label="intervals").count_label
+            == "intervals"
+        )
+
+    def test_arrangement(self) -> None:
+        assert (
+            Histogram([1.0, 2.0], [1], arrangement=Arrangement.Overlay).arrangement
+            is Arrangement.Overlay
+        )
 
     def test_count(self) -> None:
         assert create_histogram().count == 8
@@ -730,6 +950,18 @@ class TestHistogram(unittest.TestCase):
         assert histogram != Histogram(
             [0.0, 5.0, 10.0], [4, 1], below_count=1, above_count=2
         )
+        assert Histogram([1.0, 2.0], [1]) != Histogram(
+            [1.0, 2.0], [1], scale=Scale.Logarithmic
+        )
+        assert Histogram([1.0, 2.0], [1]) != Histogram(
+            [1.0, 2.0], [1], value_label="days"
+        )
+        assert Histogram([1.0, 2.0], [1]) != Histogram(
+            [1.0, 2.0], [1], count_label="intervals"
+        )
+        assert Histogram([1.0, 2.0], [1]) != Histogram(
+            [1.0, 2.0], [1], arrangement=Arrangement.Panels
+        )
         assert histogram != [4, 1]
 
     def test_repr(self) -> None:
@@ -744,6 +976,10 @@ class TestCounts(unittest.TestCase):
         assert counts.total == 5
         assert Counts({"dolor": 2}).total == 2
         assert Counts({}).total == 0
+        assert counts.value_label is None
+        assert counts.count_label is None
+        assert counts.remainder_label is None
+        assert counts.arrangement is None
 
         counts.by_value["sit"] = 3
 
@@ -761,6 +997,20 @@ class TestCounts(unittest.TestCase):
 
     def test_total(self) -> None:
         assert create_counts().total == 5
+
+    def test_value_label(self) -> None:
+        assert Counts({}, value_label="diagnosis").value_label == "diagnosis"
+
+    def test_count_label(self) -> None:
+        assert Counts({}, count_label="patients").count_label == "patients"
+
+    def test_remainder_label(self) -> None:
+        assert Counts({}, remainder_label="rarer").remainder_label == "rarer"
+
+    def test_arrangement(self) -> None:
+        assert (
+            Counts({}, arrangement=Arrangement.Panels).arrangement is Arrangement.Panels
+        )
 
     def test_to_table(self) -> None:
         assert create_counts().to_table() == Table(
@@ -787,10 +1037,122 @@ class TestCounts(unittest.TestCase):
         assert counts != Counts({"elit": 1, "dolor": 2, None: 1}, 5)
         assert counts != Counts({"dolor": 2, "elit": 1, None: 1}, 6)
         assert counts != Counts({"dolor": 2, "elit": 1}, 5)
+        assert Counts({}) != Counts({}, value_label="diagnosis")
+        assert Counts({}) != Counts({}, count_label="patients")
+        assert Counts({}) != Counts({}, remainder_label="rarer")
+        assert Counts({}) != Counts({}, arrangement=Arrangement.Overlay)
         assert counts != {"dolor": 2, "elit": 1, None: 1}
 
     def test_repr(self) -> None:
         assert repr(create_counts()) == "Counts(3 values of 5)"
+
+
+class TestScatter(unittest.TestCase):
+    def test_init(self) -> None:
+        scatter = create_scatter()
+
+        assert scatter.points == [(0.1, 0.2), (0.5, 0.4), (1.0, 0.9)]
+        assert scatter.x_label == "share of real patients"
+        assert scatter.y_label == "share of synthetic patients"
+        assert scatter.x_scale is Scale.Logarithmic
+        assert scatter.y_scale is Scale.Logarithmic
+        assert scatter.labels == {1: "lorem"}
+        assert scatter.diagonal is True
+
+        bare = Scatter([(1, 2)], x_label="x", y_label="y")
+
+        assert bare.points == [(1.0, 2.0)]
+        assert bare.x_scale is Scale.Linear
+        assert bare.y_scale is Scale.Linear
+        assert bare.labels == {}
+        assert bare.diagonal is False
+
+        scatter.points.append((2.0, 2.0))
+        scatter.labels[0] = "ipsum"
+
+        assert len(scatter.points) == 3
+        assert scatter.labels == {1: "lorem"}
+
+    def test_invalid_init(self) -> None:
+        with pytest.raises(ValueError, match="every coordinate of a scatter"):
+            Scatter([(math.nan, 1.0)], x_label="x", y_label="y")
+
+        with pytest.raises(ValueError, match="every coordinate of a scatter"):
+            Scatter([(1.0, math.inf)], x_label="x", y_label="y")
+
+        with pytest.raises(ValueError, match="names the point 1, which"):
+            Scatter([(1.0, 1.0)], x_label="x", y_label="y", labels={1: "lorem"})
+
+        with pytest.raises(ValueError, match="names the point -1, which"):
+            Scatter([(1.0, 1.0)], x_label="x", y_label="y", labels={-1: "lorem"})
+
+    def test_points(self) -> None:
+        assert create_scatter().points[0] == (0.1, 0.2)
+
+    def test_x_label(self) -> None:
+        assert create_scatter().x_label == "share of real patients"
+
+    def test_y_label(self) -> None:
+        assert create_scatter().y_label == "share of synthetic patients"
+
+    def test_x_scale(self) -> None:
+        assert create_scatter().x_scale is Scale.Logarithmic
+
+    def test_y_scale(self) -> None:
+        assert create_scatter().y_scale is Scale.Logarithmic
+
+    def test_labels(self) -> None:
+        assert create_scatter().labels == {1: "lorem"}
+
+    def test_to_polars(self) -> None:
+        dataframe = create_scatter().to_polars()
+
+        assert dataframe.columns == ["x", "y", "label"]
+        assert dataframe.rows() == [
+            (0.1, 0.2, None),
+            (0.5, 0.4, "lorem"),
+            (1.0, 0.9, None),
+        ]
+        assert Scatter([], x_label="x", y_label="y").to_polars().schema == {
+            "x": pl.Float64,
+            "y": pl.Float64,
+            "label": pl.String,
+        }
+
+    def test_eq(self) -> None:
+        scatter = create_scatter()
+
+        assert scatter == create_scatter()
+        assert scatter != Scatter(
+            [(0.1, 0.2)],
+            x_label="share of real patients",
+            y_label="share of synthetic patients",
+            x_scale=Scale.Logarithmic,
+            y_scale=Scale.Logarithmic,
+            diagonal=True,
+        )
+        assert Scatter([], x_label="x", y_label="y") != Scatter(
+            [], x_label="a", y_label="y"
+        )
+        assert Scatter([], x_label="x", y_label="y") != Scatter(
+            [], x_label="x", y_label="y", diagonal=True
+        )
+        assert Scatter([], x_label="x", y_label="y") != Scatter(
+            [], x_label="x", y_label="a"
+        )
+        assert Scatter([], x_label="x", y_label="y") != Scatter(
+            [], x_label="x", y_label="y", x_scale=Scale.Logarithmic
+        )
+        assert Scatter([], x_label="x", y_label="y") != Scatter(
+            [], x_label="x", y_label="y", y_scale=Scale.Logarithmic
+        )
+        assert Scatter([(1.0, 1.0)], x_label="x", y_label="y") != Scatter(
+            [(1.0, 1.0)], x_label="x", y_label="y", labels={0: "lorem"}
+        )
+        assert scatter != [(0.1, 0.2)]
+
+    def test_repr(self) -> None:
+        assert repr(create_scatter()) == "Scatter(3 points, 1 labelled)"
 
 
 class TestAnalytic(unittest.TestCase):
@@ -819,6 +1181,12 @@ class TestDerivation(unittest.TestCase):
     def test_parameters(self) -> None:
         assert FirstNode().parameters() == {}
         assert Summarized().parameters() == {"seed": 7}
+
+    def test_titles(self) -> None:
+        assert FirstNode().titles(create_medrecord(), create_medrecord()) == {}
+        assert Summarized().titles(create_medrecord(), {"nodes": 1}) == {
+            "nodes": "1 of 3 nodes"
+        }
 
     def test_summarize(self) -> None:
         assert FirstNode().summarize(create_medrecord()) == {}

@@ -1,21 +1,20 @@
 import json
 import math
 import re
-import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from importlib.metadata import version
 from importlib.resources import files
 from pathlib import Path
-from typing import Dict, List, Optional, TypedDict, Union
+from typing import Dict, List, Optional, Tuple, TypedDict, Union
 from unittest.mock import patch
 
-import pytest
 import typst
 
 from medrecords.evaluation._json import Json
 from medrecords.evaluation.analytic import (
+    Arrangement,
     Assessment,
     Counts,
     Distribution,
@@ -23,10 +22,17 @@ from medrecords.evaluation.analytic import (
     Measurement,
     Plot,
     ReportValue,
+    Scale,
+    Scatter,
     Table,
     Unit,
 )
-from medrecords.evaluation.document import _DEFAULT_COMPANY, Company, Document
+from medrecords.evaluation.document import (
+    _DEFAULT_COMPANY,
+    _PACKAGES,
+    Company,
+    Document,
+)
 from medrecords.evaluation.entry import (
     AnalyticEntry,
     DerivationEntry,
@@ -36,6 +42,7 @@ from medrecords.evaluation.entry import (
     KeyedAnalyticEntry,
     KeyedGroupEntry,
     KeyedResult,
+    Layout,
 )
 from medrecords.evaluation.report import Report
 
@@ -54,6 +61,7 @@ class TypstCall(TypedDict):
     font_paths: List[Path]
     ignore_system_fonts: bool
     inputs: Dict[str, str]
+    package_path: Optional[Path]
     options: Dict[str, Json]
 
 
@@ -70,6 +78,7 @@ class RecordingTypst:
         *,
         ignore_system_fonts: bool = False,
         sys_inputs: Optional[Dict[str, str]] = None,
+        package_path: Optional[Path] = None,
     ) -> None:
         self.calls.append(
             {
@@ -79,6 +88,7 @@ class RecordingTypst:
                 "font_paths": [] if font_paths is None else font_paths,
                 "ignore_system_fonts": ignore_system_fonts,
                 "inputs": {} if sys_inputs is None else sys_inputs,
+                "package_path": package_path,
                 "options": {},
             }
         )
@@ -199,6 +209,145 @@ def create_across() -> GroupEntry:
     )
 
 
+def create_scatter() -> Scatter:
+    return Scatter(
+        [(0.001 * 2**index, 0.0012 * 2**index) for index in range(10)]
+        + [(0.0, 0.5), (0.004, 0.0)],
+        x_label="lorem",
+        y_label="ipsum",
+        x_scale=Scale.Logarithmic,
+        y_scale=Scale.Logarithmic,
+        diagonal=True,
+        labels={
+            9: "dolor",
+            8: "sit amet",
+            7: "consectetur",
+            0: "adipiscing",
+            10: "elit",
+        },
+    )
+
+
+def create_layouts() -> GroupEntry:
+    concepts = GroupEntry(
+        "concepts",
+        "Concepts",
+        "elit",
+        [],
+        None,
+        [
+            GroupEntry(
+                code,
+                f"{code} sed",
+                None,
+                [],
+                None,
+                [create_entry("count", index)],
+            )
+            for index, code in enumerate(("C01", "C02"))
+        ],
+        layout=Layout.Appendix,
+    )
+    draw = GroupEntry(
+        "draw",
+        "Draw",
+        "do eiusmod",
+        [],
+        DerivationEntry({"seed": 7}, {}, timedelta(seconds=1), None),
+        [
+            create_entry("inlined", 2),
+            KeyedGroupEntry(
+                "sizes",
+                "Sizes",
+                None,
+                [],
+                {},
+                [create_keyed("patients", 3, 2), create_keyed("span", 0.5, 1.0)],
+            ),
+        ],
+        layout=Layout.Inline,
+    )
+    broken = GroupEntry(
+        "broken",
+        "Broken",
+        None,
+        [],
+        DerivationEntry({}, {}, timedelta(), Failure("E", "m", "")),
+        [],
+        layout=Layout.Inline,
+    )
+    keys = ("R1", "R2", "R3", "R4", "R5")
+
+    return GroupEntry(
+        "layouts",
+        "Layouts",
+        None,
+        [],
+        None,
+        [
+            create_entry(
+                "links",
+                Table(
+                    ["entry"],
+                    [[("layouts", "concepts", "C01", "count")], [("layouts", "draw")]],
+                ),
+            ),
+            create_entry("scatter", create_scatter()),
+            create_entry(
+                "logarithmic",
+                Histogram(
+                    [0.01, 0.1, 1.0, 10.0, 100.0],
+                    [1, 5, 3, 1],
+                    below_count=1,
+                    above_count=1,
+                    scale=Scale.Logarithmic,
+                    value_label="tempor",
+                    count_label="incididunt",
+                ),
+            ),
+            create_entry(
+                "whole",
+                Histogram([-0.5, 0.5, 1.5, 2.5], [4, 2, 1], above_count=1),
+            ),
+            create_entry(
+                "classes",
+                Histogram([0.0, 1.0, 7.0, 30.0], [3, 2, 1]),
+            ),
+            KeyedAnalyticEntry(
+                "panels",
+                "Panels",
+                None,
+                {},
+                [
+                    KeyedResult(
+                        key,
+                        timedelta(seconds=0.25),
+                        Distribution([float(index + value) for value in range(10)]),
+                    )
+                    for index, key in enumerate(keys)
+                ],
+            ),
+            KeyedAnalyticEntry(
+                "panel_counts",
+                "Panel counts",
+                None,
+                {},
+                [
+                    KeyedResult(
+                        key,
+                        timedelta(seconds=0.25),
+                        Counts({"F": 3, None: 1}, arrangement=Arrangement.Panels),
+                    )
+                    for key in keys[:2]
+                ],
+            ),
+            draw,
+            broken,
+            concepts,
+        ],
+    )
+
+
 def create_report() -> Report:
     truth = True
 
@@ -267,6 +416,10 @@ def create_report() -> Report:
                         Table(["a", "b"], [[1, None], [4, 2.5]]),
                     ),
                     create_entry(
+                        "paths",
+                        Table(["check", "value"], [[("amet", "table"), 1]]),
+                    ),
+                    create_entry(
                         "long",
                         Table(["a"], [[row] for row in range(20)]),
                     ),
@@ -312,9 +465,11 @@ def create_report() -> Report:
             create_entry("truth", truth),
             create_entry("ratio", 1.5),
             create_entry("nan", math.nan),
+            create_layouts(),
         ],
         datetime(2026, 9, 2, 10, 0, tzinfo=timezone.utc),
         timedelta(seconds=2),
+        parameters={"seed": 7, "groups": ["Patient", "Visit"]},
     )
 
 
@@ -331,12 +486,63 @@ def create_company() -> Company:
 def create_call(document: Document) -> TypstCall:
     typst = RecordingTypst()
 
-    with patch.dict(sys.modules, {"typst": typst}):
+    with patch("medrecords.evaluation.document.typst", typst):
         document.to_pdf("report.pdf")
 
     call = typst.calls[0]
     call["options"] = json.loads(call["inputs"]["options"])
     return call
+
+
+def create_text(content: Json) -> str:
+    assert isinstance(content, dict)
+
+    text = content.get("text")
+    children = content.get("children")
+
+    if isinstance(text, str):
+        return text
+
+    if isinstance(children, list):
+        return "".join(create_text(child) for child in children)
+
+    return create_text(content["body"])
+
+
+def create_query(report: Report, selector: str) -> List[Json]:
+    found = json.loads(
+        typst.query(
+            str(
+                files("medrecords.evaluation")
+                .joinpath("template")
+                .joinpath("report.typ")
+            ),
+            selector,
+            sys_inputs=create_call(Document(report, run_details=True))["inputs"],
+            package_path=_PACKAGES,
+        )
+    )
+    assert isinstance(found, list)
+    return found
+
+
+def create_renderings(report: Report) -> Dict[Tuple[str, ...], Tuple[Json, Json]]:
+    renderings: Dict[Tuple[str, ...], Tuple[Json, Json]] = {}
+
+    for rendering in create_query(report, "<rendering>"):
+        assert isinstance(rendering, dict)
+
+        value = rendering["value"]
+
+        assert isinstance(value, dict)
+        assert isinstance(value["path"], list)
+
+        renderings[tuple(str(name) for name in value["path"])] = (
+            value["picture"],
+            value["scale"],
+        )
+
+    return renderings
 
 
 def create_page_count(pdf: bytes) -> int:
@@ -355,13 +561,19 @@ class TestDocument(unittest.TestCase):
         assert call["root"] is None
         assert [path.name for path in call["font_paths"]] == ["template"]
         assert call["ignore_system_fonts"] is True
+        assert call["package_path"] == _PACKAGES
+        assert _PACKAGES.parent.name == "template"
+        assert _PACKAGES.name == "packages"
         assert json.loads(call["inputs"]["report"])["name"] == "lorem"
         assert call["options"] == {
             "kind": "Evaluation report",
-            "run_details": True,
+            "cover": True,
+            "contents": True,
             "section_breaks": True,
             "parameter_lines": True,
             "failure_details": True,
+            "run_details": False,
+            "table_rows": None,
             "company": _DEFAULT_COMPANY,
             "version": version("medrecords"),
         }
@@ -374,10 +586,13 @@ class TestDocument(unittest.TestCase):
                 logo=None,
                 company=company,
                 kind="Release check",
-                run_details=False,
+                cover=False,
+                contents=False,
                 section_breaks=False,
                 parameter_lines=False,
                 failure_details=False,
+                run_details=True,
+                table_rows=20,
             )
         )
         company["name"] = "sit"
@@ -385,23 +600,31 @@ class TestDocument(unittest.TestCase):
         assert call["source"] == Path("amet/template.typ")
         assert call["root"] == Path("amet")
         assert call["ignore_system_fonts"] is False
+        assert call["package_path"] == _PACKAGES
         assert call["inputs"]["logo"] == ""
         assert call["options"] == {
             "kind": "Release check",
-            "run_details": False,
+            "cover": False,
+            "contents": False,
             "section_breaks": False,
             "parameter_lines": False,
             "failure_details": False,
+            "run_details": True,
+            "table_rows": 20,
             "company": create_company(),
             "version": version("medrecords"),
         }
+        assert (
+            create_call(Document(create_report(), company=None))["options"]["company"]
+            is None
+        )
 
         with tempfile.TemporaryDirectory() as directory:
             logo = Path(directory) / "logo.svg"
             logo.write_text(SVG)
             typst = RecordingTypst()
 
-            with patch.dict(sys.modules, {"typst": typst}):
+            with patch("medrecords.evaluation.document.typst", typst):
                 Document(create_report(), logo=logo).to_pdf("report.pdf")
 
         assert typst.calls[0]["inputs"]["logo"] == SVG
@@ -420,12 +643,17 @@ class TestDocument(unittest.TestCase):
                 logo=None,
                 company=create_company(),
                 kind="Release check",
-                run_details=False,
                 section_breaks=False,
                 parameter_lines=False,
                 failure_details=False,
             ).to_pdf(path)
             configured = path.read_bytes()
+
+            Document(report, company=None, run_details=True).to_pdf(path)
+            detailed = path.read_bytes()
+
+            Document(report, company=None, logo=None).to_pdf(path)
+            anonymous = path.read_bytes()
 
             template = Path(directory) / "template.typ"
             template.write_text(
@@ -435,48 +663,69 @@ class TestDocument(unittest.TestCase):
             custom = path.read_bytes()
 
         assert default.startswith(b"%PDF")
-        assert b"Run details" in default
+        assert b"Run details" not in default
         assert b"MedModels GmbH" in default
         assert b"Lorem Clinic" not in default
         assert configured.startswith(b"%PDF")
-        assert b"Run details" not in configured
         assert b"Lorem Clinic" in configured
         assert create_page_count(configured) < create_page_count(default)
+        assert b"Run details" in detailed
+        assert b"MedModels GmbH" not in detailed
+        assert create_page_count(detailed) > create_page_count(default)
+        assert anonymous.startswith(b"%PDF")
+        assert b"MedModels GmbH" not in anonymous
         assert custom.startswith(b"%PDF")
         assert create_page_count(custom) == 1
 
-        headings = json.loads(
-            typst.query(
-                str(
-                    files("medrecords.evaluation")
-                    .joinpath("template")
-                    .joinpath("report.typ")
-                ),
-                "heading",
-                sys_inputs=create_call(Document(report))["inputs"],
-            )
-        )
-
-        assert [
-            (heading["level"], heading["body"]["text"]) for heading in headings
-        ] == [
-            (1, "amet"),
-            (2, "keyed"),
-            (1, "failed_group"),
-            (1, "failed_derivation"),
-            (1, "Vacant"),
-            (1, "Cohort"),
-            (2, "older"),
-            (2, "by_sex"),
-            (1, "Run details"),
+        headings = [
+            heading
+            for heading in create_query(report, "heading")
+            if isinstance(heading, dict)
         ]
 
-    def test_invalid_to_pdf(self) -> None:
-        with (
-            patch.dict(sys.modules, {"typst": None}),
-            pytest.raises(ImportError, match=r"medrecords\[pdf\]"),
-        ):
-            Document(create_report()).to_pdf("report.pdf")
+        assert [
+            (heading["level"], create_text(heading["body"]), heading["outlined"])
+            for heading in headings
+        ] == [
+            (1, "Overview", True),
+            (1, "Contents", False),
+            (1, "amet", True),
+            (2, "keyed", True),
+            (1, "failed_group", True),
+            (1, "failed_derivation", True),
+            (1, "Vacant", True),
+            (1, "Cohort", True),
+            (2, "older", True),
+            (2, "by_sex", True),
+            (1, "Layouts", True),
+            (2, "Sizes", True),
+            (1, "Appendix", True),
+            (2, "Layouts / Concepts", True),
+            (3, "C01 sed", False),
+            (3, "C02 sed", False),
+            (1, "Run details", True),
+        ]
+        assert [heading["numbering"] for heading in headings][:4] == [
+            None,
+            None,
+            "1.1",
+            "1.1",
+        ]
+
+        renderings = create_renderings(report)
+
+        assert renderings["histogram",] == ("overlay", "linear")
+        assert renderings["wide",] == ("overlay", "linear")
+        assert renderings["empty_histogram",] == ("none", None)
+        assert renderings["layouts", "logarithmic"] == ("overlay", "logarithmic")
+        assert renderings["layouts", "whole"] == ("overlay", "linear")
+        assert renderings["layouts", "classes"] == ("overlay", "linear")
+        assert renderings["layouts", "panels"] == ("panels", "linear")
+        assert renderings["layouts", "panel_counts"] == ("panels", None)
+        assert renderings["layouts", "scatter"] == ("scatter", None)
+        assert renderings["layouts", "draw", "sizes"] == ("table", None)
+        assert renderings["across", "differing"] == ("apart", None)
+        assert renderings["across", "sexes"] == ("overlay", None)
 
     def test_repr(self) -> None:
         assert repr(Document(create_report())) == "Document('lorem')"

@@ -4,7 +4,14 @@ import unittest
 import pytest
 from graphrecords import edges, nodes
 
-from medrecords.evaluation.analytic import Assessment, Counts, Histogram, Unit
+from medrecords.evaluation.analytic import (
+    Assessment,
+    Bins,
+    Counts,
+    Histogram,
+    Scale,
+    Unit,
+)
 from medrecords.evaluation.catalogue.attributes import (
     AttributeCompleteness,
     AttributeCounts,
@@ -109,6 +116,13 @@ class TestAttributeSum(unittest.TestCase):
 
 
 class TestAttributeDistribution(unittest.TestCase):
+    def test_init(self) -> None:
+        distribution = AttributeDistribution(
+            "amet", CONSECTETUR, bins=Bins(count=4)
+        ).compute(create_medrecord())
+
+        assert distribution.bins == Bins(count=4)
+
     def test_compute(self) -> None:
         distribution = AttributeDistribution("amet", CONSECTETUR).compute(
             create_medrecord()
@@ -116,6 +130,8 @@ class TestAttributeDistribution(unittest.TestCase):
 
         assert sorted(distribution.values) == [1.0, 3.0, 5.0]
         assert math.isclose(distribution.mean, 3.0)
+        assert distribution.bins is None
+        assert distribution.value_label == "amet"
 
     def test_invalid_compute(self) -> None:
         with pytest.raises(TypeError, match="expected float"):
@@ -139,6 +155,14 @@ class TestAttributeHistogram(unittest.TestCase):
         with pytest.raises(ValueError, match="must be increasing"):
             AttributeHistogram("amet", nodes(), [1.0, 0.0])
 
+    def test_init(self) -> None:
+        histogram = AttributeHistogram(
+            "amet", CONSECTETUR, [1, 10, 100], scale=Scale.Logarithmic
+        ).compute(create_medrecord())
+
+        assert histogram.scale is Scale.Logarithmic
+        assert histogram.counts == [3, 0]
+
     def test_compute(self) -> None:
         histogram = AttributeHistogram("amet", CONSECTETUR, [0.0, 2.0, 4.0]).compute(
             create_medrecord()
@@ -150,9 +174,11 @@ class TestAttributeHistogram(unittest.TestCase):
         assert histogram.above_count == 1
         assert histogram.statistics is not None
         assert math.isclose(histogram.statistics["mean"], 3.0)
+        assert histogram.scale is Scale.Linear
+        assert histogram.value_label == "amet"
         assert AttributeHistogram("missing", nodes(), [0.0, 1.0]).compute(
             create_medrecord()
-        ) == Histogram([0.0, 1.0], [0])
+        ) == Histogram([0.0, 1.0], [0], value_label="missing")
 
     def test_invalid_compute(self) -> None:
         with pytest.raises(TypeError, match="expected float"):
@@ -162,13 +188,13 @@ class TestAttributeHistogram(unittest.TestCase):
 
     def test_title(self) -> None:
         assert AttributeHistogram("amet", nodes(), [0.0, 1.0]).title() == (
-            "Histogram of amet"
+            "Distribution of amet"
         )
 
     def test_parameters(self) -> None:
-        assert AttributeHistogram("amet", nodes(), [0.0, 1.0]).parameters() == {
+        assert AttributeHistogram("amet", nodes(), [10, 20]).parameters() == {
             "attribute": "amet",
-            "edges": [0.0, 1.0],
+            "edges": [10, 20],
         }
 
 
@@ -182,6 +208,8 @@ class TestAttributeCounts(unittest.TestCase):
 
         assert counts.by_value == {"dolor": 2, "elit": 2}
         assert counts.total == 4
+        assert counts.value_label == "sit"
+        assert counts.remainder_label is None
 
         ranked = AttributeCounts("amet", nodes()).compute(
             create_medrecord().add_nodes([("nona", {"amet": 5}), ("deca", {"amet": 5})])
@@ -195,8 +223,9 @@ class TestAttributeCounts(unittest.TestCase):
         assert len(limited.by_value) == 1
         assert list(limited.by_value.values()) == [1]
         assert limited.total == 3
+        assert limited.remainder_label == "less frequent values"
         assert AttributeCounts("missing", nodes()).compute(create_medrecord()) == (
-            Counts({})
+            Counts({}, value_label="missing")
         )
 
     def test_title(self) -> None:
@@ -204,7 +233,7 @@ class TestAttributeCounts(unittest.TestCase):
 
     def test_description(self) -> None:
         assert AttributeCounts("sit", nodes()).description() == (
-            "Shares are of the elements that carry the attribute."
+            "Shares are of the entries that carry sit."
         )
 
     def test_parameters(self) -> None:
@@ -272,7 +301,7 @@ class TestAttributeCompleteness(unittest.TestCase):
     def test_description(self) -> None:
         assert (
             AttributeCompleteness("amet", nodes()).description()
-            == "Share of the elements that carry the attribute."
+            == "The share of entries with a value of amet."
         )
 
     def test_parameters(self) -> None:

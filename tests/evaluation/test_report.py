@@ -9,10 +9,12 @@ import pytest
 
 from medrecords.evaluation.analytic import (
     Assessment,
+    Bins,
     Counts,
     Distribution,
     Histogram,
     Measurement,
+    Scale,
     Table,
     Unit,
 )
@@ -49,6 +51,7 @@ class TestReport(unittest.TestCase):
         assert report.started_at == datetime(2026, 9, 2, 10, 0, tzinfo=timezone.utc)
         assert report.duration == timedelta(seconds=2)
         assert report.inputs == [InputEntry("medrecord", 3, 2)]
+        assert report.parameters == {}
         assert [entry.name for entry in report.entries] == ["amet", "sit", "across"]
         assert report.analytic("amet").result == 1
         assert [path for path, _ in report.analytics()] == [
@@ -78,6 +81,10 @@ class TestReport(unittest.TestCase):
             "below_count": 0,
             "above_count": 0,
             "statistics": Distribution([4, 1, 3, 2, 10]).statistics,
+            "scale": "linear",
+            "value_label": None,
+            "count_label": None,
+            "arrangement": None,
         }
         assert entries[27]["result"] == {
             "kind": "histogram",
@@ -86,6 +93,10 @@ class TestReport(unittest.TestCase):
             "below_count": 1,
             "above_count": 2,
             "statistics": None,
+            "scale": "linear",
+            "value_label": None,
+            "count_label": None,
+            "arrangement": None,
         }
         assert entries[28]["result"] == {
             "kind": "table",
@@ -118,6 +129,10 @@ class TestReport(unittest.TestCase):
                 },
             ],
             "total": 4,
+            "value_label": None,
+            "count_label": None,
+            "remainder_label": None,
+            "arrangement": None,
         }
         assert entries[26]["result"]["statistics"] is None
         assert entries[20]["name"] == 2023
@@ -126,13 +141,18 @@ class TestReport(unittest.TestCase):
             "kind": "datetime",
             "value": "2026-09-02T00:00:00+00:00",
         }
-        assert [keyed["result"]["histogram"] for keyed in entries[21]["results"]] == [
-            {"edges": [0.0, 5.0, 10.0], "counts": [3, 0]},
-            {"edges": [0.0, 5.0, 10.0], "counts": [0, 2]},
+        assert [
+            keyed["result"]["histogram"]["counts"] for keyed in entries[21]["results"]
+        ] == [[1, 1, 1, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0, 1, 1]]
+        assert entries[21]["results"][0]["result"]["histogram"]["edges"] == [
+            value + 0.5 for value in range(10)
         ]
         assert entries[22]["results"][0]["result"]["histogram"] == {
-            "edges": [1.0, 2.0, 3.0],
+            "edges": [0.5, 1.5, 2.5],
             "counts": [1, 1],
+            "below_count": 0,
+            "above_count": 0,
+            "scale": "linear",
         }
         assert entries[22]["results"][1]["result"]["kind"] == "failure"
         assert entries[23]["kind"] == "keyed_group"
@@ -180,13 +200,21 @@ class TestReport(unittest.TestCase):
             "unit": None,
         }
         assert entries[15]["result"]["values"] == [4.0, 1.0, 3.0, 2.0, 10.0]
-        assert entries[15]["result"]["bin_count"] is None
+        assert entries[15]["result"]["bins"] is None
         assert entries[15]["result"]["statistics"]["count"] == 5
         assert math.isclose(entries[15]["result"]["statistics"]["median"], 3.0)
-        assert entries[15]["result"]["histogram"] == {
-            "edges": [0.0, 5.0, 10.0, 15.0],
-            "counts": [4, 0, 1],
-        }
+        assert entries[15]["result"]["histogram"]["counts"] == [
+            1,
+            1,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+        ]
         assert entries[16]["parameters"] == {
             "limit": 3,
             "groups": ["sit", "elit"],
@@ -200,6 +228,42 @@ class TestReport(unittest.TestCase):
             "label": None,
         }
         assert entries[17]["derivation"]["summary"] == {"kept": [1, 2]}
+        assert entries[11]["layout"] == "section"
+        assert entries[23]["layout"] == "section"
+        assert entries[31]["result"] == {
+            "kind": "scatter",
+            "points": [[0.1, 0.2], [0.5, 0.4]],
+            "x_label": "share of real patients",
+            "y_label": "share of synthetic patients",
+            "x_scale": "logarithmic",
+            "y_scale": "linear",
+            "labels": [{"index": 1, "label": "lorem"}],
+            "diagonal": True,
+        }
+        assert entries[32]["result"]["rows"] == [
+            [{"kind": "path", "names": ["sit", 2024]}, 1],
+            [{"kind": "path", "names": ["across"]}, None],
+        ]
+        assert entries[33]["result"]["scale"] == "logarithmic"
+        assert entries[33]["result"]["value_label"] == "dose in mg"
+        assert entries[33]["result"]["count_label"] == "prescriptions"
+        assert entries[33]["result"]["arrangement"] == "panels"
+        assert entries[34]["result"]["bins"] == {
+            "count": 3,
+            "scale": "logarithmic",
+            "outside_share": 0.0,
+        }
+        assert entries[34]["result"]["value_label"] == "days"
+        assert entries[34]["result"]["count_label"] == "intervals"
+        assert entries[34]["result"]["arrangement"] == "overlay"
+        assert entries[34]["result"]["histogram"]["scale"] == "logarithmic"
+        assert entries[35]["result"]["value_label"] == "diagnosis"
+        assert entries[35]["result"]["count_label"] == "patients"
+        assert entries[35]["result"]["remainder_label"] == "less frequent values"
+        assert entries[35]["result"]["arrangement"] == "overlay"
+        assert entries[36]["layout"] == "inline"
+        assert entries[37]["layout"] == "appendix"
+        assert document["parameters"] == {"seed": 7, "records": ["real", "synthetic"]}
 
         report = Report(
             "lorem",
@@ -330,9 +394,26 @@ class TestReport(unittest.TestCase):
                         create_keyed_result("synthetic", result=Counts({"sit": 1})),
                     ],
                 ),
+                create_keyed_analytic_entry(
+                    "disagreeing",
+                    results=[
+                        create_keyed_result(
+                            result=Distribution(
+                                [1.5, 2.5], bins=Bins(scale=Scale.Linear)
+                            )
+                        ),
+                        create_keyed_result(
+                            "synthetic",
+                            result=Distribution(
+                                [10.5, 2.5], bins=Bins(scale=Scale.Logarithmic)
+                            ),
+                        ),
+                    ],
+                ),
             ],
             datetime(2026, 9, 2, 10, 0, tzinfo=timezone.utc),
             timedelta(seconds=2),
+            parameters={"seed": 7},
         )
 
         with tempfile.TemporaryDirectory() as directory:
@@ -341,6 +422,7 @@ class TestReport(unittest.TestCase):
             loaded = Report.from_json(path)
 
         assert loaded == rich
+        assert loaded.parameters == {"seed": 7}
         assert loaded.analytic("shares").result == Table(
             ["value", "share"], [["sit", 0.75]], units={"share": Unit.Share}
         )
@@ -379,6 +461,13 @@ class TestReport(unittest.TestCase):
             pytest.raises(ValueError, match="expected an object at report"),
         ):
             Report.from_json(write_json(directory, []))
+
+    def test_parameters(self) -> None:
+        report = create_rich_report()
+
+        report.parameters["seed"] = 8
+
+        assert report.parameters == {"seed": 7, "records": ["real", "synthetic"]}
 
     def test_keyed_group(self) -> None:
         report = Report(
@@ -425,6 +514,15 @@ class TestReport(unittest.TestCase):
             report.entries,
             datetime.now(timezone.utc),
             report.duration,
+        )
+        assert report != Report(
+            "lorem",
+            None,
+            [InputEntry("medrecord", 3, 2)],
+            report.entries,
+            report.started_at,
+            report.duration,
+            parameters={"seed": 7},
         )
         assert report != create_group_entry()
 

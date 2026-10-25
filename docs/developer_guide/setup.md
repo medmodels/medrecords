@@ -14,6 +14,7 @@ MedRecords utilizes a `Makefile` to manage development tasks. Here's a breakdown
 - **install-dev:** Similar to `install`, but additionally installs development dependencies needed for running tests, linting, code formatting and the documentation.
 - **install-tests:** Similar to install, but additionally installs development dependencies needed for running tests.
 - **install-docs:** Similar to install, but additionally installs development dependencies needed for building the docs.
+- **typst-packages:** Downloads the Typst packages the report template imports.
 - **test:** Runs Python unit tests using `pytest`.
 - **test-python-coverage:** Runs Python tests and shows the line numbers of statements in each module that weren't executed.
 - **test-python-coverage-non-isolated:** Runs Python tests in a non-isolated manner, showing whether all modules are covered (including tests and `__init__.py` files).

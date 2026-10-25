@@ -8,6 +8,8 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Optional, TypedDict, Union
 
+import typst
+
 if TYPE_CHECKING:
     import os
 
@@ -28,11 +30,14 @@ class _Options(TypedDict):
     """The settings a template reads from ``sys.inputs.options``."""
 
     kind: str
-    run_details: bool
+    cover: bool
+    contents: bool
     section_breaks: bool
     parameter_lines: bool
     failure_details: bool
-    company: Company
+    run_details: bool
+    table_rows: Optional[int]
+    company: Optional[Company]
     version: str
 
 
@@ -51,6 +56,9 @@ _TEMPLATE: Final[Path] = Path(__file__).parent / "template"
 #: The logo a document prints unless another one is given, or none.
 _DEFAULT_LOGO: Final[Path] = _TEMPLATE / "logo.svg"
 
+#: The directory the bundled template's Typst packages are loaded from, offline.
+_PACKAGES: Final[Path] = _TEMPLATE / "packages"
+
 
 class Document:
     """A typeset rendering of a report."""
@@ -58,12 +66,15 @@ class Document:
     _report: Report
     _template: Optional[Path]
     _logo: Optional[Path]
-    _company: Company
+    _company: Optional[Company]
     _kind: str
-    _run_details: bool
+    _cover: bool
+    _contents: bool
     _section_breaks: bool
     _parameter_lines: bool
     _failure_details: bool
+    _run_details: bool
+    _table_rows: Optional[int]
 
     def __init__(
         self,
@@ -71,12 +82,15 @@ class Document:
         *,
         template: Optional[Union[str, os.PathLike[str]]] = None,
         logo: Optional[Union[str, os.PathLike[str]]] = _DEFAULT_LOGO,
-        company: Company = _DEFAULT_COMPANY,
+        company: Optional[Company] = _DEFAULT_COMPANY,
         kind: str = "Evaluation report",
-        run_details: bool = True,
+        cover: bool = True,
+        contents: bool = True,
         section_breaks: bool = True,
         parameter_lines: bool = True,
         failure_details: bool = True,
+        run_details: bool = False,
+        table_rows: Optional[int] = None,
     ) -> None:
         """Initializes a document of a report.
 
@@ -88,46 +102,53 @@ class Document:
             logo (Optional[Union[str, os.PathLike[str]]]): The SVG file to print
                 as the logo, or None for a document without one. Defaults to the
                 logo of the bundled template.
-            company (Company): The company block to print. Defaults to the
-                MedModels one.
+            company (Optional[Company]): The company block to print on the cover
+                and in the footer, or None for none. Defaults to the MedModels
+                one.
             kind (str): The kind of document, printed above the title. Defaults
                 to "Evaluation report".
-            run_details (bool): Whether to print the appendix timing every
-                analytic and every derivation. Defaults to True.
+            cover (bool): Whether to open with a cover page of its own, holding
+                the logo and the company, the kind, the title, the description,
+                the report's parameters, the date of the run and the medrecords
+                version; without one, the first page opens with them. Defaults
+                to True.
+            contents (bool): Whether to print the contents, listing the headings
+                of the outer three levels with their pages. Defaults to True.
             section_breaks (bool): Whether to start a new page for every
-                top-level group. Defaults to True.
-            parameter_lines (bool): Whether to print the line with the
-                parameters of every analytic and derivation under its heading.
-                Defaults to True.
+                top-level section. Defaults to True.
+            parameter_lines (bool): Whether to print the parameters of every
+                analytic and derivation under its title. Defaults to True.
             failure_details (bool): Whether to print the exception type and
                 message of every failure, or only that the entry was not
                 computed. Defaults to True.
+            run_details (bool): Whether to end with an appendix holding when the
+                run started, how long it took, the sizes of its inputs and the
+                time every entry took, and to print the sizes of the inputs and
+                the summary of every derivation under its group. Defaults to
+                False.
+            table_rows (Optional[int]): How many rows of a table to print at
+                most, with a line saying how many follow, or None for every
+                row. Defaults to None.
         """
         self._report = report
         self._template = None if template is None else Path(template)
         self._logo = None if logo is None else Path(logo)
         self._company = copy.copy(company)
         self._kind = kind
-        self._run_details = run_details
+        self._cover = cover
+        self._contents = contents
         self._section_breaks = section_breaks
         self._parameter_lines = parameter_lines
         self._failure_details = failure_details
+        self._run_details = run_details
+        self._table_rows = table_rows
 
     def to_pdf(self, path: Union[str, os.PathLike[str]]) -> None:
         """Typesets the document to a PDF.
 
         Args:
             path (Union[str, os.PathLike[str]]): The path of the PDF to write.
-
-        Raises:
-            ImportError: If the typst package is not installed.
         """
-        try:
-            import typst
-        except ImportError as error:
-            msg = "cannot typeset without the typst package: install medrecords[pdf]"
-            raise ImportError(msg) from error
-
         inputs = {
             "report": self._report._to_json(),
             "logo": self._logo_text(),
@@ -141,6 +162,7 @@ class Document:
                 font_paths=[_TEMPLATE],
                 ignore_system_fonts=True,
                 sys_inputs=inputs,
+                package_path=_PACKAGES,
             )
         else:
             typst.compile(
@@ -149,6 +171,7 @@ class Document:
                 root=self._template.parent,
                 font_paths=[_TEMPLATE],
                 sys_inputs=inputs,
+                package_path=_PACKAGES,
             )
 
     def _logo_text(self) -> str:
@@ -160,10 +183,13 @@ class Document:
     def _options(self) -> _Options:
         return {
             "kind": self._kind,
-            "run_details": self._run_details,
+            "cover": self._cover,
+            "contents": self._contents,
             "section_breaks": self._section_breaks,
             "parameter_lines": self._parameter_lines,
             "failure_details": self._failure_details,
+            "run_details": self._run_details,
+            "table_rows": self._table_rows,
             "company": self._company,
             "version": version("medrecords"),
         }

@@ -82,7 +82,13 @@ class AttributeRange(AttributeAnalytic[IndexType, Assessment]):
         Returns:
             Optional[str]: The heading.
         """
-        return f"Values of {self._attribute} outside the range"
+        if self._minimum is None:
+            return f"Values of {self._attribute} above {self._maximum}"
+
+        if self._maximum is None:
+            return f"Values of {self._attribute} below {self._minimum}"
+
+        return f"Values of {self._attribute} outside {self._minimum} to {self._maximum}"
 
     def parameters(self) -> Mapping[str, Detail]:
         """Records the attribute and the bounds.
@@ -126,7 +132,7 @@ class AttributeUniqueness(AttributeAnalytic[IndexType, Assessment]):
         Returns:
             Optional[str]: The heading.
         """
-        return f"Elements sharing a value of {self._attribute}"
+        return f"Entries sharing a value of {self._attribute}"
 
 
 class AttributeOrder(Analytic[MedRecord, Assessment], Generic[IndexType]):
@@ -180,7 +186,7 @@ class AttributeOrder(Analytic[MedRecord, Assessment], Generic[IndexType]):
         Returns:
             Optional[str]: The heading.
         """
-        return f"Order of {self._earlier} and {self._later}"
+        return f"Entries with {self._later} before {self._earlier}"
 
     def description(self) -> Optional[str]:
         """Explains the analytic.
@@ -188,7 +194,7 @@ class AttributeOrder(Analytic[MedRecord, Assessment], Generic[IndexType]):
         Returns:
             Optional[str]: The text under the heading.
         """
-        return "Elements lacking either attribute are left out."
+        return "Entries missing either value are left out."
 
     def parameters(self) -> Mapping[str, Detail]:
         """Records the attributes.

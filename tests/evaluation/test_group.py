@@ -14,6 +14,7 @@ from medrecords.evaluation.entry import (
     InputEntry,
     KeyedAnalyticEntry,
     KeyedGroupEntry,
+    Layout,
 )
 from medrecords.evaluation.findings import Findings
 from medrecords.evaluation.group import EvaluationGroup
@@ -40,7 +41,7 @@ def create_report(
     progress: Optional[List[ProgressArguments]] = None,
 ) -> Report:
     return Run(on_failure, None if progress is None else progress.append).report(
-        "amet", None, group, create_medrecord()
+        "amet", None, {}, group, create_medrecord()
     )
 
 
@@ -97,6 +98,36 @@ class ByPosition(Derivation[MedRecord, Mapping[Value, MedRecord]]):
 class Twice(Derivation[MedRecord, Mapping[Value, MedRecord]]):
     def derive(self, medrecord: MedRecord) -> Dict[Value, MedRecord]:
         return {0: medrecord, 1: medrecord}
+
+
+class TitledNodes(ByNode):
+    def titles(
+        self, medrecord: MedRecord, derived: Mapping[Value, MedRecord], /
+    ) -> Mapping[Value, str]:
+        return {"lorem": f"Lorem of {medrecord.node_count()}", "dolor": "Dolor"}
+
+
+class TitledTwice(Twice):
+    def titles(
+        self, medrecord: MedRecord, derived: Mapping[Value, MedRecord], /
+    ) -> Mapping[Value, str]:
+        return {0: f"First of {medrecord.node_indices()[0]}"}
+
+
+class RaisingTitles(Twice):
+    def titles(
+        self, medrecord: MedRecord, derived: Mapping[Value, MedRecord], /
+    ) -> Mapping[Value, str]:
+        msg = "elit"
+        raise ValueError(msg)
+
+
+class Paths(Analytic[Findings[InGroup], str]):
+    def __init__(self, count: Placement[InGroup, object]) -> None:
+        self._count = count
+
+    def compute(self, findings: Findings[InGroup]) -> str:
+        return " / ".join(str(name) for name in findings.path(self._count))
 
 
 class IntNames(Analytic[Findings[InGroup], str]):
@@ -159,6 +190,17 @@ class TestGroup(unittest.TestCase):
         assert nested.inputs == [InputEntry("medrecord", 2, 0)]
         assert nested.derivation is None
         assert nested.analytic("count").result == 2
+        assert nested.layout is Layout.Section
+        assert (
+            create_report(
+                group.add_group(
+                    "nested", EvaluationGroup[MedRecord](), layout=Layout.Inline
+                )
+            )
+            .group("nested")
+            .layout
+            is Layout.Inline
+        )
 
     def test_invalid_add_group(self) -> None:
         group = EvaluationGroup[MedRecord]().add_analytic("count", NodeCount())
@@ -180,6 +222,19 @@ class TestGroup(unittest.TestCase):
         assert first.inputs == [InputEntry("medrecord", 1, 0)]
         assert first.derivation is not None
         assert first.analytic("count").result == 1
+        assert (
+            create_report(
+                group.add_group_over(
+                    "first",
+                    FirstNode(),
+                    EvaluationGroup[MedRecord](),
+                    layout=Layout.Appendix,
+                )
+            )
+            .group("first")
+            .layout
+            is Layout.Appendix
+        )
 
     def test_invalid_add_group_over(self) -> None:
         group = EvaluationGroup[MedRecord]().add_analytic("count", NodeCount())
@@ -228,6 +283,21 @@ class TestGroup(unittest.TestCase):
         assert [entry.name for entry in positioned.entries] == [0, 1]
         assert positioned.group(1).title == "1"
         assert positioned.group(1).analytic("count").result == 1
+        assert positioned.layout is Layout.Section
+        assert positioned.group(1).layout is Layout.Section
+
+        titled = create_report(
+            EvaluationGroup[MedRecord]().add_group_over_each(
+                "nodes",
+                TitledNodes(),
+                EvaluationGroup[MedRecord]().add_analytic("count", NodeCount()),
+                layout=Layout.Appendix,
+            )
+        ).group("nodes")
+
+        assert titled.layout is Layout.Appendix
+        assert [entry.title for entry in titled.entries] == ["Lorem of 2", "ipsum"]
+        assert titled.group("lorem").layout is Layout.Section
 
     def test_invalid_add_group_over_each(self) -> None:
         group = EvaluationGroup[MedRecord]().add_analytic("count", NodeCount())
@@ -249,6 +319,28 @@ class TestGroup(unittest.TestCase):
         assert isinstance(failing.derivation.failure, Failure)
         assert failing.derivation.failure.message == "adipiscing"
 
+        untitled = create_report(
+            EvaluationGroup[MedRecord]().add_group_over_each(
+                "nodes",
+                RaisingTitles(),
+                EvaluationGroup[MedRecord]().add_analytic("count", NodeCount()),
+            )
+        ).group("nodes")
+
+        assert untitled.entries == []
+        assert untitled.derivation is not None
+        assert untitled.derivation.summary == {}
+        assert isinstance(untitled.derivation.failure, Failure)
+        assert untitled.derivation.failure.message == "elit"
+
+        with pytest.raises(ValueError, match="elit"):
+            create_report(
+                EvaluationGroup[MedRecord]().add_group_over_each(
+                    "nodes", RaisingTitles(), EvaluationGroup[MedRecord]()
+                ),
+                OnFailure.Raise,
+            )
+
     def test_add_group_across(self) -> None:
         group = EvaluationGroup[MedRecord]()
 
@@ -260,26 +352,31 @@ class TestGroup(unittest.TestCase):
             .add_group(
                 "nested",
                 EvaluationGroup[MedRecord]().add_analytic("count", NodeCount()),
+                layout=Layout.Inline,
             )
             .add_group_over(
                 "first",
                 FirstNode(),
                 EvaluationGroup[MedRecord]().add_analytic("count", NodeCount()),
+                layout=Layout.Appendix,
             )
             .add_group_over_each(
                 "positions",
-                Twice(),
+                TitledTwice(),
                 EvaluationGroup[MedRecord]().add_analytic("count", NodeCount()),
+                layout=Layout.Inline,
             )
             .add_group_across(
                 "again",
                 Twice(),
                 EvaluationGroup[MedRecord]().add_analytic("count", NodeCount()),
             ),
+            layout=Layout.Inline,
         )
 
         assert create_report(group).entries == []
         across = create_report(added).group("nodes")
+        assert across.layout is Layout.Inline
         assert across.inputs == [InputEntry("lorem", 1, 0), InputEntry("ipsum", 1, 0)]
         assert across.derivation is not None
         assert [type(entry) for entry in across.entries] == [
@@ -296,8 +393,10 @@ class TestGroup(unittest.TestCase):
         nested = across.keyed_group("nested")
         assert nested.inputs == [InputEntry("lorem", 1, 0), InputEntry("ipsum", 1, 0)]
         assert nested.derivations == {}
+        assert nested.layout is Layout.Inline
         assert nested.keyed_analytic("count").keys == ["lorem", "ipsum"]
         first = across.keyed_group("first")
+        assert first.layout is Layout.Appendix
         assert first.inputs == [InputEntry("lorem", 1, 0)]
         assert list(first.derivations) == ["lorem", "ipsum"]
         assert first.derivations["lorem"].failure is None
@@ -307,7 +406,10 @@ class TestGroup(unittest.TestCase):
         positions = across.keyed_group("positions")
         assert list(positions.derivations) == ["lorem", "ipsum"]
         assert [entry.name for entry in positions.entries] == [0, 1]
-        assert positions.keyed_group(0).title == "0"
+        assert positions.layout is Layout.Inline
+        assert positions.keyed_group(0).title == "First of lorem"
+        assert positions.keyed_group(1).title == "1"
+        assert positions.keyed_group(0).layout is Layout.Section
         assert positions.keyed_group(0).derivations == {}
         assert positions.keyed_group(0).inputs == [
             InputEntry("lorem", 1, 0),
@@ -319,6 +421,7 @@ class TestGroup(unittest.TestCase):
         ]
         again = across.keyed_group("again")
         assert [entry.name for entry in again.entries] == [0, 1]
+        assert again.layout is Layout.Section
         assert again.keyed_group(1).keyed_analytic("count").result("ipsum") == 1
 
         titled = create_report(
@@ -349,6 +452,26 @@ class TestGroup(unittest.TestCase):
         assert failing.derivation is not None
         assert isinstance(failing.derivation.failure, Failure)
         assert failing.derivation.failure.message == "adipiscing"
+
+        untitled = create_report(
+            EvaluationGroup[MedRecord]().add_group_across(
+                "nodes",
+                ByNode(),
+                EvaluationGroup[MedRecord]().add_group_over_each(
+                    "inner",
+                    RaisingTitles(),
+                    EvaluationGroup[MedRecord]().add_analytic("count", NodeCount()),
+                ),
+            )
+        ).group("nodes")
+        inner = untitled.keyed_group("inner")
+
+        assert inner.entries == []
+        assert [
+            derivation.failure.message
+            for derivation in inner.derivations.values()
+            if derivation.failure is not None
+        ] == ["elit", "elit"]
 
     def test_add_conclusion(self) -> None:
         group, count = EvaluationGroup[MedRecord]().place_analytic("count", NodeCount())
@@ -414,6 +537,27 @@ class TestGroup(unittest.TestCase):
             ("summed",),
             ("quadrupled",),
         ]
+
+        located, located_count = EvaluationGroup[MedRecord]().place_analytic(
+            "count", NodeCount()
+        )
+        located = located.add_conclusion("names", IntNames()).add_conclusion(
+            "path", Paths(located_count)
+        )
+        placed = create_report(
+            EvaluationGroup[MedRecord]()
+            .add_group("outer", located)
+            .add_group_across("nodes", ByNode(), located)
+        )
+
+        assert placed.group("outer").analytic("names").result == "outer/count"
+        assert placed.group("outer").analytic("path").result == "outer / count"
+        assert placed.group("nodes").keyed_analytic("names").result("lorem") == (
+            "nodes/count"
+        )
+        assert placed.group("nodes").keyed_analytic("path").result("ipsum") == (
+            "nodes / count"
+        )
 
     def test_invalid_add_conclusion(self) -> None:
         group = EvaluationGroup[MedRecord]().add_analytic("count", NodeCount())
@@ -482,7 +626,7 @@ class TestGroup(unittest.TestCase):
         )
 
         group, placement = EvaluationGroup[MedRecord]().place_group(
-            "nested", nested, title="Sit", description="dolor"
+            "nested", nested, title="Sit", description="dolor", layout=Layout.Inline
         )
 
         assert isinstance(placement, GroupPlacement)
@@ -492,6 +636,7 @@ class TestGroup(unittest.TestCase):
         )
         assert report.group("nested").title == "Sit"
         assert report.group("nested").description == "dolor"
+        assert report.group("nested").layout is Layout.Inline
         assert report.analytic("doubled").result == 4
 
     def test_place_group_over(self) -> None:
@@ -500,7 +645,12 @@ class TestGroup(unittest.TestCase):
         )
 
         group, placement = EvaluationGroup[MedRecord]().place_group_over(
-            "first", FirstNode(), nested, title="Sit", description="dolor"
+            "first",
+            FirstNode(),
+            nested,
+            title="Sit",
+            description="dolor",
+            layout=Layout.Inline,
         )
 
         assert type(placement) is GroupPlacement
@@ -509,6 +659,7 @@ class TestGroup(unittest.TestCase):
         )
         assert report.group("first").title == "Sit"
         assert report.group("first").description == "dolor"
+        assert report.group("first").layout is Layout.Inline
         assert report.analytic("doubled").result == 2
 
     def test_place_group_over_each(self) -> None:
@@ -517,13 +668,19 @@ class TestGroup(unittest.TestCase):
         )
 
         group, placement = EvaluationGroup[MedRecord]().place_group_over_each(
-            "nodes", ByNode(), nested, title="Sit", description="dolor"
+            "nodes",
+            ByNode(),
+            nested,
+            title="Sit",
+            description="dolor",
+            layout=Layout.Inline,
         )
 
         assert type(placement) is KeyedGroupPlacement
         report = create_report(group.add_conclusion("summed", Summed(placement[inner])))
         assert report.group("nodes").title == "Sit"
         assert report.group("nodes").description == "dolor"
+        assert report.group("nodes").layout is Layout.Inline
         assert report.analytic("summed").result == 2
 
     def test_place_group_across(self) -> None:
@@ -532,13 +689,19 @@ class TestGroup(unittest.TestCase):
         )
 
         group, placement = EvaluationGroup[MedRecord]().place_group_across(
-            "nodes", ByNode(), nested, title="Sit", description="dolor"
+            "nodes",
+            ByNode(),
+            nested,
+            title="Sit",
+            description="dolor",
+            layout=Layout.Inline,
         )
 
         assert type(placement) is KeyedGroupPlacement
         report = create_report(group.add_conclusion("summed", Summed(placement[inner])))
         assert report.group("nodes").title == "Sit"
         assert report.group("nodes").description == "dolor"
+        assert report.group("nodes").layout is Layout.Inline
         assert report.analytic("summed").result == 2
 
     def test_place_conclusion(self) -> None:
