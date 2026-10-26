@@ -129,7 +129,7 @@
   grid(
     columns: (1fr, auto),
     align: (left, right),
-    if company != none { secondary[#company.name · #company.street · #company.city · #company.web] },
+    if company != none { secondary[#company.name · #company.street · #company.city · #link("https://" + company.web)[#company.web]] },
     secondary(context [Page #counter(page).display("1 of 1", both: true)]),
   )
 }

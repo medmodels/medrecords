@@ -10,6 +10,7 @@ present and reaches every question asked about the values.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import (
     TYPE_CHECKING,
     Generic,
@@ -351,9 +352,8 @@ class AttributeHistogram(AttributeAnalytic[IndexType, Histogram]):
 class AttributeCounts(AttributeAnalytic[IndexType, Counts]):
     """How often every value of an attribute occurs, most frequent first.
 
-    Values that occur equally often come back in the reverse of the order the
-    query engine hands them to the sort, so a limit can cut between two values
-    that occur equally often.
+    Values that occur equally often are ordered by their text, so a limit always
+    lists the same values.
     """
 
     _limit: Optional[int]
@@ -398,13 +398,13 @@ class AttributeCounts(AttributeAnalytic[IndexType, Counts]):
         carrying = self._carrying(medrecord)
         counts = carrying.group_by(carrying.attribute(self._attribute)).count()
         total = read(carrying.count().evaluate(), int)
-        ranked = counts.ungroup_keyed().sort().reverse_order()
-
-        if self._limit is not None:
-            ranked = ranked.take(self._limit)
+        ranked = sorted(
+            read_pairs(counts.ungroup_keyed().evaluate(), int),
+            key=lambda pair: (-pair[1], str(pair[0])),
+        )
 
         return Counts(
-            dict(read_pairs(ranked.evaluate(), int)),
+            dict(ranked[: self._limit]),
             total,
             value_label=str(self._attribute),
             remainder_label=None if self._limit is None else "less frequent values",
@@ -520,7 +520,7 @@ class AttributeCompleteness(AttributeAnalytic[IndexType, Union[float, Assessment
 
         return Assessment(
             share,
-            f"at least {self._minimum:.1%}",
+            f"at least {(Decimal(repr(self._minimum)) * 100).normalize():f}%",
             passed=share >= self._minimum,
             unit=Unit.Share,
         )

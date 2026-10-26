@@ -38,7 +38,6 @@ from medrecords.evaluation.entry import (
     DerivationEntry,
     Failure,
     GroupEntry,
-    InputEntry,
     KeyedAnalyticEntry,
     KeyedGroupEntry,
     KeyedResult,
@@ -127,7 +126,6 @@ def create_across() -> GroupEntry:
         "across",
         "Cohort",
         "sit amet",
-        [InputEntry("real", 3, 2), InputEntry("synthetic", 2, 1)],
         DerivationEntry({}, {}, timedelta(seconds=1), None),
         [
             create_keyed("count", 3, 2),
@@ -183,6 +181,11 @@ def create_across() -> GroupEntry:
             ),
             create_keyed("same", Distribution([7.5]), Distribution([7.5, 7.5])),
             create_keyed("tables", Table(["a"], [[1], [2]]), Table(["a"], [[3]])),
+            create_keyed(
+                "cut_tables",
+                Table(["a"], [[row] for row in range(8)], printed_rows=3),
+                Table(["a"], [[9]], printed_rows=3),
+            ),
             create_keyed("mixed", Table(["a"], [[1]]), Table(["b"], [[2]])),
             create_keyed("pictures", Plot(SVG), Plot(SVG)),
             create_keyed("empty", Table([], []), Table([], [])),
@@ -192,7 +195,6 @@ def create_across() -> GroupEntry:
                 "older",
                 "older",
                 "dolor",
-                [InputEntry("real", 1, 0)],
                 {
                     "real": DerivationEntry(
                         {"seed": 7}, {"kept": 1}, timedelta(seconds=1), None
@@ -204,7 +206,7 @@ def create_across() -> GroupEntry:
                 },
                 [create_keyed("count", 1)],
             ),
-            KeyedGroupEntry("by_sex", "by_sex", None, [], {}, []),
+            KeyedGroupEntry("by_sex", "by_sex", None, {}, []),
         ],
     )
 
@@ -233,14 +235,12 @@ def create_layouts() -> GroupEntry:
         "concepts",
         "Concepts",
         "elit",
-        [],
         None,
         [
             GroupEntry(
                 code,
                 f"{code} sed",
                 None,
-                [],
                 None,
                 [create_entry("count", index)],
             )
@@ -252,7 +252,6 @@ def create_layouts() -> GroupEntry:
         "draw",
         "Draw",
         "do eiusmod",
-        [],
         DerivationEntry({"seed": 7}, {}, timedelta(seconds=1), None),
         [
             create_entry("inlined", 2),
@@ -260,7 +259,6 @@ def create_layouts() -> GroupEntry:
                 "sizes",
                 "Sizes",
                 None,
-                [],
                 {},
                 [create_keyed("patients", 3, 2), create_keyed("span", 0.5, 1.0)],
             ),
@@ -271,7 +269,6 @@ def create_layouts() -> GroupEntry:
         "broken",
         "Broken",
         None,
-        [],
         DerivationEntry({}, {}, timedelta(), Failure("E", "m", "")),
         [],
         layout=Layout.Inline,
@@ -282,7 +279,6 @@ def create_layouts() -> GroupEntry:
         "layouts",
         "Layouts",
         None,
-        [],
         None,
         [
             create_entry(
@@ -322,7 +318,7 @@ def create_layouts() -> GroupEntry:
                     KeyedResult(
                         key,
                         timedelta(seconds=0.25),
-                        Distribution([float(index + value) for value in range(10)]),
+                        Distribution([index + value for value in range(10)]),
                     )
                     for index, key in enumerate(keys)
                 ],
@@ -354,7 +350,6 @@ def create_report() -> Report:
     return Report(
         "lorem",
         "adipiscing",
-        [InputEntry("medrecord", 3, 2)],
         [
             create_entry("integer", 1),
             create_entry("string", "sed"),
@@ -406,7 +401,6 @@ def create_report() -> Report:
                 "amet",
                 "amet",
                 None,
-                [InputEntry("medrecord", 3, 2)],
                 DerivationEntry(
                     {"seed": 7}, {"kept": [1, 2]}, timedelta(seconds=1), None
                 ),
@@ -424,6 +418,16 @@ def create_report() -> Report:
                         Table(["a"], [[row] for row in range(20)]),
                     ),
                     create_entry(
+                        "counted",
+                        Table(["a"], [[row] for row in range(3)], printed_rows=0),
+                    ),
+                    create_entry(
+                        "cut",
+                        Table(
+                            ["a"], [[row + 0.5] for row in range(30)], printed_rows=5
+                        ),
+                    ),
+                    create_entry(
                         "shares",
                         Table(
                             ["value", "count", "share"],
@@ -437,7 +441,6 @@ def create_report() -> Report:
                         "keyed",
                         "keyed",
                         None,
-                        [InputEntry("medrecord", 1, 0)],
                         None,
                         [create_entry("count", 1)],
                     ),
@@ -447,7 +450,6 @@ def create_report() -> Report:
                 "failed_group",
                 "failed_group",
                 None,
-                [],
                 DerivationEntry({}, {}, timedelta(seconds=1), Failure("E", "m", "")),
                 [],
             ),
@@ -455,11 +457,10 @@ def create_report() -> Report:
                 "failed_derivation",
                 "failed_derivation",
                 None,
-                [],
                 DerivationEntry({}, {}, timedelta(), Failure("E", "m", "")),
                 [],
             ),
-            GroupEntry("vacant", "Vacant", "consectetur", [], None, []),
+            GroupEntry("vacant", "Vacant", "consectetur", None, []),
             create_across(),
             create_entry("empty_table", Table([], [])),
             create_entry("truth", truth),
@@ -470,6 +471,16 @@ def create_report() -> Report:
         datetime(2026, 9, 2, 10, 0, tzinfo=timezone.utc),
         timedelta(seconds=2),
         parameters={"seed": 7, "groups": ["Patient", "Visit"]},
+    )
+
+
+def create_table_report(entry: Union[AnalyticEntry, KeyedAnalyticEntry]) -> Report:
+    return Report(
+        "lorem",
+        None,
+        [entry],
+        datetime(2026, 9, 2, tzinfo=timezone.utc),
+        timedelta(seconds=1),
     )
 
 
@@ -573,7 +584,6 @@ class TestDocument(unittest.TestCase):
             "parameter_lines": True,
             "failure_details": True,
             "run_details": False,
-            "table_rows": None,
             "company": _DEFAULT_COMPANY,
             "version": version("medrecords"),
         }
@@ -592,7 +602,6 @@ class TestDocument(unittest.TestCase):
                 parameter_lines=False,
                 failure_details=False,
                 run_details=True,
-                table_rows=20,
             )
         )
         company["name"] = "sit"
@@ -610,7 +619,6 @@ class TestDocument(unittest.TestCase):
             "parameter_lines": False,
             "failure_details": False,
             "run_details": True,
-            "table_rows": 20,
             "company": create_company(),
             "version": version("medrecords"),
         }
@@ -726,6 +734,45 @@ class TestDocument(unittest.TestCase):
         assert renderings["layouts", "draw", "sizes"] == ("table", None)
         assert renderings["across", "differing"] == ("apart", None)
         assert renderings["across", "sexes"] == ("overlay", None)
+
+    def test_to_pdf_prints_the_printed_rows(self) -> None:
+        rows = [[row] for row in range(400)]
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.pdf"
+
+            Document(
+                create_table_report(create_entry("table", Table(["a"], rows)))
+            ).to_pdf(path)
+            whole = create_page_count(path.read_bytes())
+
+            Document(
+                create_table_report(
+                    create_entry("table", Table(["a"], rows, printed_rows=5))
+                )
+            ).to_pdf(path)
+            cut = create_page_count(path.read_bytes())
+
+            Document(
+                create_table_report(
+                    create_keyed("keyed", Table(["a"], rows), Table(["a"], rows))
+                )
+            ).to_pdf(path)
+            stacked = create_page_count(path.read_bytes())
+
+            Document(
+                create_table_report(
+                    create_keyed(
+                        "keyed",
+                        Table(["a"], rows, printed_rows=5),
+                        Table(["a"], rows, printed_rows=5),
+                    )
+                )
+            ).to_pdf(path)
+            stacked_cut = create_page_count(path.read_bytes())
+
+        assert cut < whole
+        assert stacked_cut < stacked
 
     def test_repr(self) -> None:
         assert repr(Document(create_report())) == "Document('lorem')"

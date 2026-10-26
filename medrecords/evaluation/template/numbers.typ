@@ -27,6 +27,9 @@
 
 #let sign-of(number) = if number < 0 { "−" } else { "" }
 
+// An integer with leading zeros to the given number of digits.
+#let padded-digits(integer, digits) = "0" * calc.max(0, digits - str(integer).len()) + str(integer)
+
 #let grouped(integer) = sign-of(integer) + grouped-digits(str(calc.abs(int(integer))))
 
 // A number written with exactly the given decimals, its integer part grouped.
@@ -51,25 +54,10 @@
     exponent += 1
   }
 
-  sign-of(value) + str(mantissa) + " × 10" + superscript(exponent)
+  sign-of(value) + padded(mantissa, 1) + " × 10" + superscript(exponent)
 }
 
 #let below-tiniest(value) = if value < 0 { "> −10" + superscript(-12) } else { "< 10" + superscript(-12) }
-
-// Three significant digits below 0.001; places decimals otherwise.
-#let fixed(value, places: decimals) = {
-  let magnitude = calc.abs(value)
-
-  if magnitude >= largest { return power-form(value) }
-
-  if magnitude != 0 and magnitude < tiniest { return below-tiniest(value) }
-
-  if magnitude != 0 and magnitude < smallest {
-    return padded(value, significant-digits - calc.floor(calc.log(magnitude)) - 1)
-  }
-
-  padded(value, places)
-}
 
 // Three significant digits with the integer part always in full.
 #let significant(value) = {
@@ -91,6 +79,20 @@
   padded(value, places)
 }
 
+// Three significant digits below 0.001, unless aligned in a column; places decimals
+// otherwise.
+#let fixed(value, places: decimals, aligned: false) = {
+  let magnitude = calc.abs(value)
+
+  if magnitude >= largest { return power-form(value) }
+
+  if magnitude != 0 and magnitude < tiniest { return below-tiniest(value) }
+
+  if magnitude != 0 and magnitude < smallest and not aligned { return significant(value) }
+
+  padded(value, places)
+}
+
 // The shortest exact form of a number, its integer part grouped.
 #let shortest(value) = {
   if type(value) == int { return grouped(value) }
@@ -105,16 +107,6 @@
   let (whole, fraction) = if shown.contains(".") { shown.split(".") } else { (shown, none) }
 
   sign-of(value) + grouped-digits(whole) + if fraction == none { "" } else { "." + fraction }
-}
-
-// The fewest decimals that write a number exactly, its integer part grouped.
-#let exact(value) = {
-  if calc.abs(value) >= largest { return power-form(value) }
-
-  let tolerance = 1e-9 * calc.max(1, calc.abs(value))
-  let places = range(13).find(places => calc.abs(calc.round(value, digits: places) - value) <= tolerance)
-
-  padded(value, if places == none { 12 } else { places })
 }
 
 #let share(value) = padded(value * 100, 1) + "%"
@@ -132,7 +124,9 @@
 #let seconds(duration, unit: auto) = {
   let sign = if duration < 0 { "−" } else { "" }
   let magnitude = calc.abs(duration)
-  let chosen = if unit == auto { unit-for(magnitude) } else { unit }
+  let first = unit-for(magnitude)
+  let rounded = calc.round(magnitude / per-unit.at(first), digits: 1) * per-unit.at(first)
+  let chosen = if unit == auto { unit-for(rounded) } else { unit }
   let scaled = magnitude / per-unit.at(chosen)
 
   if magnitude != 0 and scaled < 0.05 { return sign + "< 0.1 " + chosen }
@@ -140,32 +134,34 @@
   sign + padded(scaled, 1) + " " + chosen
 }
 
-#let moment(stamp) = {
-  let shown = stamp.slice(0, 10) + " " + stamp.slice(11, 16)
-  let tail = stamp.slice(19)
-  let signs = ("+", "-")
-  let offset = if tail.ends-with("Z") {
-    "+00:00"
-  } else if tail.len() >= 6 and tail.slice(-6, -5) in signs {
-    tail.slice(-6)
-  } else {
-    ""
-  }
-
-  if offset == "" { shown } else if offset == "+00:00" { shown + " UTC" } else { shown + " " + offset }
-}
-
-#let months = (
-  "January", "February", "March", "April", "May", "June",
-  "July", "August", "September", "October", "November", "December",
+#let datetime-of(value) = datetime(
+  year: value.year,
+  month: value.month,
+  day: value.day,
+  hour: value.hour,
+  minute: value.minute,
+  second: value.second,
 )
 
-// "24 October 2026" for a timestamp.
-#let day-of(stamp) = {
-  let (year, month, day) = stamp.slice(0, 10).split("-")
+// " UTC", " +05:30", or nothing for a datetime without an offset.
+#let offset-text(offset) = {
+  if offset == none { return "" }
+  if offset == 0 { return " UTC" }
 
-  str(int(day)) + " " + months.at(int(month) - 1) + " " + year
+  let magnitude = calc.abs(offset)
+  let parts = (calc.quo(magnitude, seconds-per.hour), calc.quo(calc.rem(magnitude, seconds-per.hour), seconds-per.minute))
+  let seconds = calc.rem(magnitude, seconds-per.minute)
+
+  if seconds != 0 { parts.push(seconds) }
+
+  " " + (if offset < 0 { "−" } else { "+" }) + parts.map(part => padded-digits(part, 2)).join(":")
 }
+
+// "2026-10-24 10:00 UTC".
+#let moment(value) = datetime-of(value).display("[year]-[month]-[day] [hour]:[minute]") + offset-text(value.offset)
+
+// "24 October 2026".
+#let day-of(value) = datetime-of(value).display("[day padding:none] [month repr:long] [year]")
 
 #let kind-of(value) = if type(value) == dictionary { value.at("kind", default: none) }
 
@@ -199,7 +195,7 @@
 }
 
 // A single value: "none", "yes" or "no", a number, a date, a duration.
-#let scalar(value, duration: auto, places: decimals, empty: none) = {
+#let scalar(value, duration: auto, places: decimals, empty: none, aligned: false) = {
   if value == none {
     if empty == none { text(fill: palette.muted)[none] } else { empty }
   } else if type(value) == bool {
@@ -207,13 +203,19 @@
   } else if type(value) == int {
     grouped(value)
   } else if type(value) == float {
-    fixed(value, places: places)
+    fixed(value, places: places, aligned: aligned)
   } else if kind-of(value) == "timedelta" {
     seconds(duration-seconds(value), unit: duration)
   } else if kind-of(value) == "datetime" {
-    let (date, time) = value.value.slice(0, 19).split("T")
+    let moment = datetime-of(value)
+    let midnight = value.hour == 0 and value.minute == 0 and value.second == 0 and value.microsecond == 0
+    let fraction = if value.microsecond == 0 { "" } else { "." + padded-digits(value.microsecond, 6) }
 
-    if time == "00:00:00" { date } else { date + " " + time }
+    if midnight and value.offset == none {
+      moment.display("[year]-[month]-[day]")
+    } else {
+      moment.display("[year]-[month]-[day] [hour]:[minute]:[second]") + fraction + offset-text(value.offset)
+    }
   } else if kind-of(value) == "float" {
     non-finite(value)
   } else {
@@ -237,13 +239,13 @@
   if value == none { text(fill: palette.muted, style: "italic")[missing] } else { scalar(value) }
 }
 
-#let in-unit(value, unit, duration: auto, places: decimals, empty: none) = {
+#let in-unit(value, unit, duration: auto, places: decimals, empty: none, aligned: false) = {
   if unit == "share" and type(value) in (int, float) {
     share(value)
   } else if unit == "points" and type(value) in (int, float) {
     points(value)
   } else {
-    scalar(value, duration: duration, places: places, empty: empty)
+    scalar(value, duration: duration, places: places, empty: empty, aligned: aligned)
   }
 }
 

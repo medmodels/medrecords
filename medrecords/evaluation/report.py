@@ -20,13 +20,13 @@ from medrecords.evaluation._json import (
     JsonObject,
     ReportDocument,
     copy_details,
+    encode_datetime,
     encode_details,
 )
 from medrecords.evaluation.entry import (
     AnalyticEntry,
     Entry,
     GroupEntry,
-    InputEntry,
     KeyedAnalyticEntry,
     KeyedGroupEntry,
 )
@@ -56,7 +56,6 @@ class Report:
         self,
         name: str,
         description: Optional[str],
-        inputs: Sequence[InputEntry],
         entries: Sequence[Entry],
         started_at: datetime,
         duration: timedelta,
@@ -68,8 +67,6 @@ class Report:
         Args:
             name (str): The name of the evaluation that ran.
             description (Optional[str]): The text under the name, if any.
-            inputs (Sequence[InputEntry]): The sizes of the MedRecords the run
-                was started with.
             entries (Sequence[Entry]): The entries of the root group, in
                 definition order.
             started_at (datetime): When the run started.
@@ -79,7 +76,7 @@ class Report:
         """
         self._name = name
         self._parameters = {} if parameters is None else copy_details(parameters)
-        self._root = GroupEntry(name, name, description, inputs, None, entries)
+        self._root = GroupEntry(name, name, description, None, entries)
         self._started_at = started_at
         self._duration = duration
 
@@ -101,11 +98,8 @@ class Report:
         return cls(
             document.string("name"),
             document.optional_string("description"),
-            GroupEntry._inputs_from_document(document),
             GroupEntry._entries_from_document(document),
-            JsonObject._decoded_datetime(
-                document.string("started_at"), "report.started_at"
-            ),
+            JsonObject._decoded_datetime(document.document("started_at")),
             JsonObject._decoded_duration(
                 document.number("duration"), "report.duration"
             ),
@@ -128,9 +122,8 @@ class Report:
             "name": self.name,
             "description": self.description,
             "parameters": encode_details(self._parameters),
-            "started_at": self._started_at.isoformat(),
+            "started_at": encode_datetime(self._started_at),
             "duration": self._duration.total_seconds(),
-            "inputs": [entry._to_document() for entry in self.inputs],
             "entries": [entry._to_document() for entry in self.entries],
         }
 
@@ -160,15 +153,6 @@ class Report:
             Dict[str, Detail]: The parameters by name.
         """
         return copy_details(self._parameters)
-
-    @property
-    def inputs(self) -> List[InputEntry]:
-        """The sizes of the MedRecords the run was started with.
-
-        Returns:
-            List[InputEntry]: One entry per MedRecord found in the inputs.
-        """
-        return self._root.inputs
 
     @property
     def entries(self) -> List[Entry]:
@@ -281,7 +265,7 @@ class Report:
             other (object): The object to compare against.
 
         Returns:
-            bool: True if both hold the same entries, inputs, parameters, start
+            bool: True if both hold the same entries, parameters, start
                 and duration, otherwise False.
         """
         if not isinstance(other, Report):

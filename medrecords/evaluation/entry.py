@@ -24,7 +24,6 @@ from medrecords.evaluation._json import (
     DerivationDocument,
     FailureDocument,
     GroupDocument,
-    InputDocument,
     Json,
     JsonObject,
     KeyedAnalyticDocument,
@@ -32,16 +31,12 @@ from medrecords.evaluation._json import (
     KeyedResultDocument,
     ResultDocument,
     copy_details,
-    encode_arrangement,
-    encode_cell,
     encode_details,
-    encode_distribution,
-    encode_float,
-    encode_unit,
     encode_value,
 )
 from medrecords.evaluation.analytic import (
     Assessment,
+    Bins,
     Counts,
     Distribution,
     Histogram,
@@ -50,7 +45,6 @@ from medrecords.evaluation.analytic import (
     Scatter,
     Table,
 )
-from medrecords.medrecord import MedRecord
 
 if TYPE_CHECKING:
     from datetime import timedelta
@@ -58,9 +52,6 @@ if TYPE_CHECKING:
     from graphrecords import Value
 
     from medrecords.evaluation.analytic import Detail, EntryPath, ReportValue
-
-#: The name a bare MedRecord is recorded under in the inputs of a report.
-_BARE_INPUT_NAME: Final[str] = "medrecord"
 
 
 class Layout(Enum):
@@ -79,14 +70,14 @@ class Layout(Enum):
 
 #: How each kind of report value is read back from its JSON form.
 _DECODERS: Final[Dict[str, Callable[[JsonObject], ReportValue]]] = {
-    "table": JsonObject._table,
-    "plot": JsonObject._plot,
-    "measurement": JsonObject._measurement,
-    "assessment": JsonObject._assessment,
-    "distribution": JsonObject._distribution,
-    "histogram": JsonObject._histogram,
-    "counts": JsonObject._counts,
-    "scatter": JsonObject._scatter,
+    "table": Table._from_document,
+    "plot": Plot._from_document,
+    "measurement": Measurement._from_document,
+    "assessment": Assessment._from_document,
+    "distribution": Distribution._from_document,
+    "histogram": Histogram._from_document,
+    "counts": Counts._from_document,
+    "scatter": Scatter._from_document,
 }
 
 
@@ -109,85 +100,20 @@ def _decoded_result(content: Json, path: str) -> Union[ReportValue, Failure]:
 
 
 def _encode_result(result: Union[ReportValue, Failure]) -> ResultDocument:
-    if isinstance(result, Table):
-        return {
-            "kind": "table",
-            "headings": result.headings,
-            "rows": [[encode_cell(cell) for cell in row] for row in result.rows],
-            "units": [
-                encode_unit(result.units.get(heading)) for heading in result.headings
-            ],
-        }
-
-    if isinstance(result, Plot):
-        return {"kind": "plot", "svg": result.svg}
-
-    if isinstance(result, Measurement):
-        return {
-            "kind": "measurement",
-            "value": encode_float(result.value),
-            "lower": None if result.lower is None else encode_float(result.lower),
-            "upper": None if result.upper is None else encode_float(result.upper),
-            "p_value": None if result.p_value is None else encode_float(result.p_value),
-            "unit": encode_unit(result.unit),
-        }
-
-    if isinstance(result, Assessment):
-        return {
-            "kind": "assessment",
-            "value": encode_value(result.value),
-            "requirement_label": result.requirement_label,
-            "passed": result.passed,
-            "unit": encode_unit(result.unit),
-        }
-
-    if isinstance(result, Distribution):
-        return encode_distribution(result, result.histogram())
-
-    if isinstance(result, Histogram):
-        return {
-            "kind": "histogram",
-            "edges": result.edges,
-            "counts": result.counts,
-            "below_count": result.below_count,
-            "above_count": result.above_count,
-            "statistics": result.statistics,
-            "scale": result.scale.value,
-            "value_label": result.value_label,
-            "count_label": result.count_label,
-            "arrangement": encode_arrangement(result.arrangement),
-        }
-
-    if isinstance(result, Counts):
-        return {
-            "kind": "counts",
-            "counts": [
-                {"value": encode_value(value), "count": count}
-                for value, count in result.by_value.items()
-            ],
-            "total": result.total,
-            "value_label": result.value_label,
-            "count_label": result.count_label,
-            "remainder_label": result.remainder_label,
-            "arrangement": encode_arrangement(result.arrangement),
-        }
-
-    if isinstance(result, Scatter):
-        return {
-            "kind": "scatter",
-            "points": [[x, y] for x, y in result.points],
-            "x_label": result.x_label,
-            "y_label": result.y_label,
-            "x_scale": result.x_scale.value,
-            "y_scale": result.y_scale.value,
-            "labels": [
-                {"index": index, "label": label}
-                for index, label in result.labels.items()
-            ],
-            "diagonal": result.diagonal,
-        }
-
-    if isinstance(result, Failure):
+    if isinstance(
+        result,
+        (
+            Table,
+            Plot,
+            Measurement,
+            Assessment,
+            Distribution,
+            Histogram,
+            Counts,
+            Scatter,
+            Failure,
+        ),
+    ):
         return result._to_document()
 
     return encode_value(result)
@@ -301,133 +227,6 @@ class Failure:
             str: The exception type and message of the Failure.
         """
         return f"Failure({self._exception_type}: {self._message})"
-
-
-class InputEntry:
-    """The name and size of one MedRecord found in the inputs of a group."""
-
-    _name: str
-    _node_count: int
-    _edge_count: int
-
-    def __init__(self, name: str, node_count: int, edge_count: int) -> None:
-        """Initializes an input entry.
-
-        Args:
-            name (str): The name the MedRecord was found under.
-            node_count (int): The number of nodes of the MedRecord.
-            edge_count (int): The number of edges of the MedRecord.
-        """
-        self._name = name
-        self._node_count = node_count
-        self._edge_count = edge_count
-
-    @classmethod
-    def _from_inputs(cls, inputs: object, name: str = "") -> List[InputEntry]:
-        """Records every MedRecord found in the inputs of a group.
-
-        Args:
-            inputs (object): The inputs to search.
-            name (str): The name the inputs were found under. Defaults to "".
-
-        Returns:
-            List[InputEntry]: One entry per MedRecord, in the order found.
-        """
-        if isinstance(inputs, MedRecord):
-            return [
-                cls(name or _BARE_INPUT_NAME, inputs.node_count(), inputs.edge_count())
-            ]
-
-        if isinstance(inputs, Mapping):
-            return [
-                entry
-                for key, item in inputs.items()
-                for entry in cls._from_inputs(item, cls._join(name, str(key)))
-            ]
-
-        if isinstance(inputs, Sequence) and not isinstance(inputs, (str, bytes)):
-            return [
-                entry
-                for position, item in enumerate(inputs)
-                for entry in cls._from_inputs(item, cls._join(name, str(position)))
-            ]
-
-        return []
-
-    @staticmethod
-    def _join(name: str, key: str) -> str:
-        return f"{name}.{key}" if name else key
-
-    @classmethod
-    def _from_document(cls, document: JsonObject) -> InputEntry:
-        return cls(
-            document.string("name"),
-            document.integer("node_count"),
-            document.integer("edge_count"),
-        )
-
-    def _to_document(self) -> InputDocument:
-        return {
-            "name": self._name,
-            "node_count": self._node_count,
-            "edge_count": self._edge_count,
-        }
-
-    @property
-    def name(self) -> str:
-        """The name the MedRecord was found under.
-
-        Returns:
-            str: The name of the input.
-        """
-        return self._name
-
-    @property
-    def node_count(self) -> int:
-        """The number of nodes of the MedRecord.
-
-        Returns:
-            int: The number of nodes.
-        """
-        return self._node_count
-
-    @property
-    def edge_count(self) -> int:
-        """The number of edges of the MedRecord.
-
-        Returns:
-            int: The number of edges.
-        """
-        return self._edge_count
-
-    def __eq__(self, other: object) -> bool:
-        """Compares the InputEntry with another one by its contents.
-
-        Args:
-            other (object): The object to compare against.
-
-        Returns:
-            bool: True if both hold the same name and sizes, otherwise False.
-        """
-        if not isinstance(other, InputEntry):
-            return NotImplemented
-
-        return (
-            self._name == other._name
-            and self._node_count == other._node_count
-            and self._edge_count == other._edge_count
-        )
-
-    def __repr__(self) -> str:
-        """Returns the string representation of the InputEntry.
-
-        Returns:
-            str: The name and the sizes of the MedRecord.
-        """
-        return (
-            f"InputEntry({self._name!r}, node_count={self._node_count}, "
-            f"edge_count={self._edge_count})"
-        )
 
 
 class DerivationEntry:
@@ -709,7 +508,6 @@ class GroupEntry:
     _name: Value
     _title: str
     _description: Optional[str]
-    _inputs: List[InputEntry]
     _derivation: Optional[DerivationEntry]
     _entries: List[Entry]
     _layout: Layout
@@ -719,7 +517,6 @@ class GroupEntry:
         name: Value,
         title: str,
         description: Optional[str],
-        inputs: Sequence[InputEntry],
         derivation: Optional[DerivationEntry],
         entries: Sequence[Entry],
         *,
@@ -731,8 +528,6 @@ class GroupEntry:
             name (Value): The name the group was placed under.
             title (str): The heading of the group in a typeset report.
             description (Optional[str]): The text under the heading, if any.
-            inputs (Sequence[InputEntry]): The sizes of the MedRecords the group
-                ran on.
             derivation (Optional[DerivationEntry]): The recorded derivation that
                 bound the inputs, or None.
             entries (Sequence[Entry]): The entries of the group, in definition
@@ -743,7 +538,6 @@ class GroupEntry:
         self._name = name
         self._title = title
         self._description = description
-        self._inputs = list(inputs)
         self._derivation = derivation
         self._entries = list(entries)
         self._layout = layout
@@ -757,20 +551,10 @@ class GroupEntry:
             ),
             document.string("title"),
             document.optional_string("description"),
-            cls._inputs_from_document(document),
             None if derivation is None else DerivationEntry._from_document(derivation),
             cls._entries_from_document(document),
             layout=document.member("layout", Layout),
         )
-
-    @staticmethod
-    def _inputs_from_document(document: JsonObject) -> List[InputEntry]:
-        return [
-            InputEntry._from_document(
-                JsonObject(item, f"{document.path}.inputs[{index}]")
-            )
-            for index, item in enumerate(document.sequence("inputs"))
-        ]
 
     @staticmethod
     def _entries_from_document(document: JsonObject) -> List[Entry]:
@@ -799,7 +583,6 @@ class GroupEntry:
             self._name,
             self._title,
             self._description,
-            self._inputs,
             self._derivation,
             entries,
             layout=self._layout,
@@ -813,7 +596,6 @@ class GroupEntry:
             "title": self._title,
             "description": self._description,
             "layout": self._layout.value,
-            "inputs": [entry._to_document() for entry in self._inputs],
             "derivation": None if derivation is None else derivation._to_document(),
             "entries": [entry._to_document() for entry in self._entries],
         }
@@ -853,15 +635,6 @@ class GroupEntry:
             Layout: The layout.
         """
         return self._layout
-
-    @property
-    def inputs(self) -> List[InputEntry]:
-        """The sizes of the MedRecords the group ran on.
-
-        Returns:
-            List[InputEntry]: One entry per MedRecord found in the inputs.
-        """
-        return list(self._inputs)
 
     @property
     def derivation(self) -> Optional[DerivationEntry]:
@@ -996,7 +769,7 @@ class GroupEntry:
 
         Returns:
             bool: True if both hold the same name, title, description, layout,
-                inputs, derivation and entries, otherwise False.
+                derivation and entries, otherwise False.
         """
         if not isinstance(other, GroupEntry):
             return NotImplemented
@@ -1006,7 +779,6 @@ class GroupEntry:
             and self._title == other._title
             and self._description == other._description
             and self._layout == other._layout
-            and self._inputs == other._inputs
             and self._derivation == other._derivation
             and self._entries == other._entries
         )
@@ -1187,14 +959,15 @@ class KeyedAnalyticEntry:
                     strict=True,
                 )
             )
-            if distributions and Distribution._agreeing(list(distributions.values()))
+            if distributions
+            and Distribution._conflict(list(distributions.values()), Bins()) is None
             else {}
         )
         results = [
             _encode_keyed_result(
                 keyed._key,
                 keyed._duration,
-                encode_distribution(distributions[index], histograms[index]),
+                distributions[index]._to_document(histograms[index]),
             )
             if index in histograms
             else keyed._to_document()
@@ -1324,7 +1097,6 @@ class KeyedGroupEntry:
     _name: Value
     _title: str
     _description: Optional[str]
-    _inputs: List[InputEntry]
     _derivations: Dict[Value, DerivationEntry]
     _entries: List[KeyedEntry]
     _layout: Layout
@@ -1334,7 +1106,6 @@ class KeyedGroupEntry:
         name: Value,
         title: str,
         description: Optional[str],
-        inputs: Sequence[InputEntry],
         derivations: Mapping[Value, DerivationEntry],
         entries: Sequence[KeyedEntry],
         *,
@@ -1346,8 +1117,6 @@ class KeyedGroupEntry:
             name (Value): The name the group was placed under.
             title (str): The heading of the group in a typeset report.
             description (Optional[str]): The text under the heading, if any.
-            inputs (Sequence[InputEntry]): The sizes of the MedRecords the group
-                ran on, under every key.
             derivations (Mapping[Value, DerivationEntry]): The recorded
                 derivation that bound the group's inputs, by key.
             entries (Sequence[KeyedEntry]): The entries of the group, in
@@ -1358,7 +1127,6 @@ class KeyedGroupEntry:
         self._name = name
         self._title = title
         self._description = description
-        self._inputs = list(inputs)
         self._derivations = dict(derivations)
         self._entries = list(entries)
         self._layout = layout
@@ -1371,7 +1139,6 @@ class KeyedGroupEntry:
             ),
             document.string("title"),
             document.optional_string("description"),
-            GroupEntry._inputs_from_document(document),
             cls._derivations_from_document(document),
             cls._entries_from_document(document),
             layout=document.member("layout", Layout),
@@ -1417,7 +1184,6 @@ class KeyedGroupEntry:
             "title": self._title,
             "description": self._description,
             "layout": self._layout.value,
-            "inputs": [entry._to_document() for entry in self._inputs],
             "derivations": [
                 {"key": encode_value(key), "derivation": derivation._to_document()}
                 for key, derivation in self._derivations.items()
@@ -1460,15 +1226,6 @@ class KeyedGroupEntry:
             Layout: The layout.
         """
         return self._layout
-
-    @property
-    def inputs(self) -> List[InputEntry]:
-        """The sizes of the MedRecords the group ran on, under every key.
-
-        Returns:
-            List[InputEntry]: One entry per MedRecord found in the inputs.
-        """
-        return list(self._inputs)
 
     @property
     def derivations(self) -> Dict[Value, DerivationEntry]:
@@ -1549,7 +1306,7 @@ class KeyedGroupEntry:
 
         Returns:
             bool: True if both hold the same name, title, description, layout,
-                inputs, derivations and entries, otherwise False.
+                derivations and entries, otherwise False.
         """
         if not isinstance(other, KeyedGroupEntry):
             return NotImplemented
@@ -1559,7 +1316,6 @@ class KeyedGroupEntry:
             and self._title == other._title
             and self._description == other._description
             and self._layout == other._layout
-            and self._inputs == other._inputs
             and self._derivations == other._derivations
             and self._entries == other._entries
         )

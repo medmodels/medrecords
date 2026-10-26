@@ -3,7 +3,7 @@
 #import "@preview/lilaq:0.6.0" as lq
 #import "style.typ": *
 #import "numbers.typ": *
-#import "tables.typ": fitted, numeric-cell, sheet
+#import "tables.typ": kept, numeric-cell, sheet
 
 #let chart-style(body) = {
   show: lq.theme.skyline
@@ -13,7 +13,9 @@
   show lq.selector(lq.label): set text(fill: palette.ink, size: size.tiny)
   show: lq.set-grid(stroke: lines.grid)
   show: lq.cond-set(lq.grid.with(kind: "x"), stroke: none)
-  show: lq.set-legend(stroke: none, fill: none, position: left + bottom, dy: -100%, pad: 0pt)
+  show: lq.set-tick(pad: chart.tick-pad)
+  show: lq.set-label(pad: chart.label-pad)
+  show: lq.set-legend(stroke: none, fill: none, inset: 0pt, pad: 0pt)
   show lq.selector(lq.legend): set text(size: size.tiny)
   show math.equation: set text(font: fonts.text)
 
@@ -26,8 +28,6 @@
 
 #let caption-text(body) = text(size: size.tiny, fill: palette.ink, body)
 
-#let series-colour(index) = palette.series.at(calc.rem(index, palette.series.len()))
-
 #let default-noun = "values"
 
 #let noun-of(label) = if label == none { default-noun } else { label }
@@ -38,43 +38,39 @@
 // "2815 intervals", "1 interval".
 #let amount(number, noun) = grouped(number) + " " + noun-for(number, noun)
 
+// Panels when they are asked for or there are more keys than series colours, else one
+// overlaid diagram.
 #let arrangement-of(values, count) = {
   let declared = values.map(value => value.arrangement).filter(arrangement => arrangement != none)
 
-  if declared.len() > 0 { declared.first() } else if count <= overlaid-keys { "overlay" } else { "panels" }
+  if count > palette.series.len() or declared.first(default: none) == "panels" { "panels" } else { "overlay" }
 }
 
-// Tick labels in the template's number style; "0" at the tick a logarithmic scatter
-// axis draws its values at or below zero on.
-#let number-ticks(zero: none) = (ticks, ..rest) => ticks.map(tick => {
-  if zero != none and calc.abs(tick - zero) <= even-tolerance * zero { "0" } else { exact(tick) }
+// Each key in its series colour when overlaid; every panel in the first.
+#let coloured(series, arrangement) = series.enumerate().map(((index, one)) => {
+  one + (colour: if arrangement == "overlay" { palette.series.at(index) } else { palette.series.first() })
 })
 
-// Tick labels as percent, one decimal more for every tenfold finer step below one percent.
-#let percent-ticks(ticks, ..rest) = {
-  let step = if ticks.len() > 1 { calc.abs(ticks.at(1) - ticks.at(0)) } else { 1 }
-  let places = if step <= 0 { 0 } else { calc.max(0, calc.ceil(-calc.log(step * 100) - 1e-9)) }
+// Tick labels in the template's number style, with the decimals of the tick distance
+// where the tick locator states them.
+#let number-ticks(ticks, tick-info: (:), ..rest) = {
+  let places = tick-info.at("significant-digits", default: none)
+
+  ticks.map(tick => if places == none { shortest(tick) } else { padded(tick, calc.max(0, places)) })
+}
+
+#let percent-ticks(ticks, tick-info: (:), ..rest) = {
+  let places = calc.max(0, tick-info.at("significant-digits", default: 0) - 2)
 
   ticks.map(tick => padded(tick * 100, places) + "%")
 }
 
-// Whether the edges lie halfway between whole numbers, so the bins hold whole numbers.
-#let whole-numbers(edges) = edges.all(edge => calc.abs(calc.fract(calc.abs(edge)) - 0.5) <= even-tolerance)
-
-// A value axis on Lilaq's tick locators: never ticks between whole numbers when the bins
-// hold whole numbers, and fewer ticks the longer the widest label.
-#let value-axis(edges, scale) = {
-  let widest = calc.max(..(edges.first(), edges.last()).map(edge => exact(edge).clusters().len()))
-  let density = calc.min(100%, 100% * chart.short-label / widest)
-
-  (
-    subticks: none,
-    format-ticks: number-ticks(),
-    exponent: if scale == "logarithmic" { none } else { auto },
-    tick-distance: if whole-numbers(edges) { (min: 1) } else { auto },
-    tick-args: (density: density),
-  )
-}
+// Never ticks between whole numbers when the values are integers.
+#let value-axis(bins) = (
+  subticks: none,
+  format-ticks: number-ticks,
+  tick-distance: if bins.whole-numbers { (min: 1) } else { auto },
+)
 
 #let share-axis = (subticks: none, format-ticks: percent-ticks)
 
@@ -85,6 +81,18 @@
   body
 }
 
+// The height of a horizontal axis under the data area: its tick, tick labels and
+// caption with the paddings set on them.
+#let axis-height(caption) = {
+  let labels = measure(text(size: size.tiny, "0")).height
+  let captioned = if caption == none { 0pt } else { chart.label-pad + measure(text(size: size.tiny, caption)).height }
+
+  chart.tick + chart.tick-pad + labels + captioned
+}
+
+// A legend under the axis of the data area.
+#let below-axis(caption) = (position: left + top, dy: 100% + axis-height(caption) + space.snug)
+
 #let binned(value) = {
   let histogram = if value.kind == "distribution" { value.histogram } else { value }
 
@@ -94,6 +102,7 @@
     below: histogram.below_count,
     above: histogram.above_count,
     scale: histogram.scale,
+    whole-numbers: histogram.whole_numbers,
     statistics: value.statistics,
     value-label: value.value_label,
     count-label: value.count_label,
@@ -101,13 +110,12 @@
   )
 }
 
-#let histogram-series(index, key, value) = {
+#let histogram-series(key, value) = {
   let bins = binned(value)
   let total = bins.counts.sum(default: 0) + bins.below + bins.above
 
   (
     key: key,
-    colour: series-colour(index),
     bins: bins,
     total: total,
     shares: bins.counts.map(count => if total == 0 { 0 } else { count / total }),
@@ -154,19 +162,22 @@
     xscale: if first.scale == "logarithmic" { "log" } else { "linear" },
     xlim: (first.edges.first(), first.edges.last()),
     ylim: ylim,
-    xaxis: value-axis(first.edges, first.scale),
+    xaxis: value-axis(first),
     yaxis: share-axis,
+    legend: below-axis(captions.at("xlabel", default: none)),
     ..captions,
     ..histogram-marks(series, noun, filled: filled, labelled: labelled),
   )
 }
 
 // "Outside the axis: 1 synthetic interval below 0.2, 3 synthetic intervals above 5000."
+// Integers below the first edge are at most the integer under it, those above the last
+// at least the integer over it.
 #let outside-line(series, noun) = {
-  let edges = series.first().bins.edges
-  let whole = whole-numbers(edges)
-  let below = if whole { [at #grouped(int(calc.round(edges.first() - 0.5))) or less] } else { [below #exact(edges.first())] }
-  let above = if whole { [at #grouped(int(calc.round(edges.last() + 0.5))) or more] } else { [above #exact(edges.last())] }
+  let first = series.first().bins
+  let (lowest, highest) = (first.edges.first(), first.edges.last())
+  let below = if first.whole-numbers { [at #grouped(calc.ceil(lowest) - 1) or less] } else { [below #shortest(lowest)] }
+  let above = if first.whole-numbers { [at #grouped(calc.floor(highest) + 1) or more] } else { [above #shortest(highest)] }
   let part(one, count, side) = {
     let who = if one.key == none { "" } else { scalar(one.key) + " " }
 
@@ -181,28 +192,15 @@
 
 #let statistics-headings = ("n", "mean", "sd", "min", "q1", "median", "q3", "max")
 
-#let statistics-numbers(statistics) = (
-  statistics.mean,
-  statistics.standard_deviation,
-  statistics.minimum,
-  statistics.lower_quartile,
-  statistics.median,
-  statistics.upper_quartile,
-  statistics.maximum,
-)
-
-// One row per series that has values; "withheld" where a series has no statistics.
+// One row per series that has values; "withheld" where a series has no statistics. The
+// ranks of integers print exactly.
 #let statistics-sheet(series) = {
   let counted = series.filter(one => one.total > 0)
 
   if counted.all(one => one.bins.statistics == none) { return }
 
   let keyed = counted.any(one => one.key != none)
-  let whole = whole-numbers(series.first().bins.edges) and counted.all(one => {
-    let statistics = one.bins.statistics
-
-    statistics == none or (calc.fract(statistics.minimum) == 0 and calc.fract(statistics.maximum) == 0)
-  })
+  let ranked = if series.first().bins.whole-numbers { shortest } else { significant }
   let row(one) = {
     let lead = if keyed { (scalar(one.key),) } else { () }
     let statistics = one.bins.statistics
@@ -211,28 +209,23 @@
       return lead + (numeric-cell(grouped(one.total)), table.cell(colspan: 7, align: right, secondary[withheld]))
     }
 
-    let (mean, deviation, ..ranks) = statistics-numbers(statistics)
-    let ranked = if whole { exact } else { significant }
+    let deviation = statistics.standard_deviation
+    let ranks = (statistics.minimum, statistics.lower_quartile, statistics.median, statistics.upper_quartile, statistics.maximum)
 
     (
       lead
-        + (numeric-cell(grouped(statistics.count)), numeric-cell(significant(mean)), numeric-cell(significant(deviation)))
+        + (
+          numeric-cell(grouped(statistics.count)),
+          numeric-cell(significant(statistics.mean)),
+          if deviation == none { scalar(none) } else { numeric-cell(significant(deviation)) },
+        )
         + ranks.map(number => numeric-cell(ranked(number)))
     )
   }
   let headings = (if keyed { ("",) } else { () }) + statistics-headings
   let aligns = (if keyed { (left,) } else { () }) + statistics-headings.map(heading => right)
-  let drawn = fitted(text-size => text(
-    size: text-size,
-    sheet(headings.len() * (auto,), aligns, headings, counted.map(row).flatten()),
-  ))
 
-  layout(available => block(
-    above: space.loose,
-    below: 0pt,
-    breakable: measure(drawn, width: available.width).height > available.height,
-    drawn,
-  ))
+  block(above: space.loose, below: 0pt, kept(sheet(headings.len() * (auto,), aligns, headings, counted.map(row).flatten())))
 }
 
 #let panel-columns(count, available) = {
@@ -254,12 +247,13 @@
 #let histogram-picture(series, path, kind) = layout(available => {
   let first = series.first().bins
   let noun = noun-of(first.count-label)
-  let counted = series.filter(one => one.total > 0)
   let arrangement = arrangement-of(series.map(one => one.bins), series.len())
+  let series = coloured(series, arrangement)
+  let counted = series.filter(one => one.total > 0)
 
   if counted.len() == 0 { return rendered(path, kind, "none") + secondary[no values] }
 
-  if arrangement == "panels" and series.len() > 1 {
+  if arrangement == "panels" {
     let columns = panel-columns(series.len(), available.width)
     let tallest = calc.max(..counted.map(one => calc.max(..one.shares)))
     let panels = series.map(one => stack(
@@ -308,7 +302,7 @@
 // A histogram or distribution, or those of several keys: overlaid or in panels when they
 // share their edges, scale and arrangement, else each key on its own axis.
 #let histogram-chart(results, path) = {
-  let series = results.enumerate().map(((index, keyed)) => histogram-series(index, keyed.key, keyed.result))
+  let series = results.map(keyed => histogram-series(keyed.key, keyed.result))
   let kind = results.first().result.kind
 
   if agree(series.map(one => one.bins)) { return histogram-picture(series, path, kind) }
@@ -322,10 +316,10 @@
   )
 }
 
-#let counts-series(index, key, value) = {
+#let counts-series(key, value) = {
   let listed = value.counts.map(item => item.count).sum(default: 0)
 
-  (key: key, colour: series-colour(index), value: value, total: value.total, remainder: value.total - listed)
+  (key: key, value: value, total: value.total, remainder: value.total - listed)
 }
 
 #let count-of(value, category) = {
@@ -360,12 +354,17 @@
   range(0, rows.len(), step: length).map(start => rows.slice(start, calc.min(start + length, rows.len())))
 }
 
-#let counts-plot(rows, series, columns, tallest, noun, label-width, labelled, legend) = {
+// The bars of a piece of the rows, the share at the end of every bar, in a data area of
+// the given width; the category labels and their caption on the leftmost plot only.
+#let counts-plot(rows, series, columns, tallest, noun, plot-width, label-width, caption, labelled, legend) = {
+  show: lq.cond-set(lq.grid.with(kind: "x"), stroke: lines.grid)
+  show: lq.cond-set(lq.grid.with(kind: "y"), stroke: none)
+
   let row-height = series.len() * chart.bar-slot + chart.category-gap
   let thickness = chart.bar / row-height
   let offset(index) = ((series.len() - 1) / 2 - index) * chart.bar-slot / row-height
   let positions = range(rows.len()).rev()
-  let label-cell(row) = block(width: label-width, align(right, row.label))
+  let label-cell(row) = if labelled { block(width: label-width, align(right, row.label)) }
   let marks = ()
 
   for (index, one) in series.enumerate() {
@@ -387,42 +386,56 @@
     }
   }
 
-  lq.diagram(
-    width: 100%,
-    height: rows.len() * row-height,
-    margin: 0%,
-    xlim: (0, tallest),
-    ylim: (-0.5, rows.len() - 0.5),
-    xaxis: share-axis,
-    yaxis: (ticks: positions.zip(rows).map(((position, row)) => (position, if labelled { label-cell(row) } else { "" })), subticks: none),
-    xlabel: [share of #noun],
-    ..marks,
+  legend-columns(
+    lq.diagram(
+      width: plot-width,
+      height: rows.len() * row-height,
+      margin: 0%,
+      xlim: (0, tallest),
+      ylim: (-0.5, rows.len() - 0.5),
+      xaxis: share-axis,
+      yaxis: (ticks: positions.zip(rows).map(((position, row)) => (position, label-cell(row))), subticks: none),
+      xlabel: [share of #noun],
+      ylabel: if labelled { caption },
+      legend: below-axis([share of #noun]),
+      ..marks,
+    ),
+    series.len(),
   )
 }
 
 // Counts, or those of several keys: horizontal bars, a row per category and the
-// remainder row, the share at the end of every bar. A long list is drawn in pieces
-// that break across pages, the legend kept with the first and the caption with the last.
+// remainder row, the share at the end of every bar; keys overlaid in one plot or each in
+// a panel, every plot of one width so the scales match. A long list is drawn in pieces
+// that break across pages, the legend kept with the first.
 #let counts-picture(series, path) = layout(available => {
   let first = series.first().value
   let noun = noun-of(first.count_label)
   let rows = count-rows(series)
   let arrangement = arrangement-of(series.map(one => one.value), series.len())
+  let series = coloured(series, arrangement)
 
   if series.all(one => one.total == 0) { return rendered(path, "counts", "none") + secondary[no values] }
 
-  let tallest = calc.max(..series.enumerate().map(((index, one)) => if one.total == 0 { 0 } else {
+  let largest = calc.max(..series.enumerate().map(((index, one)) => if one.total == 0 { 0 } else {
     calc.max(..rows.map(row => row.counts.at(index) / one.total))
   }))
+  let tallest = if largest > 0 { lq.locate-ticks-linear(0, largest).ticks.last() } else { 1 }
+  let tallest = if tallest < largest { tallest + lq.locate-ticks-linear(0, largest).tick-distance } else { tallest }
   let longest = calc.max(..rows.map(row => measure(text(size: size.tiny, row.label)).width))
   let label-width = calc.min(longest, available.width * chart.categories)
-  let room = measure(text(size: size.tiny, number-width: "tabular", "100.0%")).width + space.tight
-  let panels = arrangement == "panels" and series.len() > 1
+  let caption-width = if first.value_label == none { 0pt } else {
+    chart.label-pad + measure(text(size: size.tiny, first.value_label)).height
+  }
+  let left = label-width + chart.tick + chart.tick-pad + caption-width
+  let room = space.hair + measure(text(size: size.tiny, number-width: "tabular", share(1))).width
+  let panels = arrangement == "panels"
   let groups = if panels { series.enumerate().map(((index, one)) => ((one,), (index,))) } else {
     ((series, range(series.len())),)
   }
   let row-height = (if panels { 1 } else { series.len() }) * chart.bar-slot + chart.category-gap
   let columns = if panels { panel-columns(series.len(), available.width) } else { 1 }
+  let plot-width = (available.width - left - columns * (room + chart.panel-gap) + chart.panel-gap) / columns
   let pieces = chunks(rows, row-height)
 
   rendered(path, "counts", if panels { "panels" } else { "overlay" })
@@ -432,10 +445,7 @@
       .enumerate()
       .map(((index, (members, columns-of))) => {
         let leftmost = calc.rem(index, columns) == 0
-        let plot = pad(right: room, legend-columns(
-          counts-plot(piece, members, columns-of, tallest, noun, label-width, leftmost, position == 0),
-          members.len(),
-        ))
+        let plot = counts-plot(piece, members, columns-of, tallest, noun, plot-width, label-width, first.value_label, leftmost, position == 0)
 
         if panels and position == 0 { stack(dir: ttb, spacing: space.snug, panel-title(members.first(), noun), plot) } else { plot }
       })
@@ -445,13 +455,13 @@
         block(above: 0pt, below: space.snug, caption-text(amount(series.first().total, noun)))
       }
 
-      grid(columns: columns * (1fr,), column-gutter: chart.panel-gap, row-gutter: space.loose, align: bottom, ..plots)
+      grid(columns: columns * (auto,), column-gutter: chart.panel-gap, row-gutter: space.loose, align: bottom, ..plots)
     })
   }
 })
 
 #let counts-chart(results, path) = {
-  let series = results.enumerate().map(((index, keyed)) => counts-series(index, keyed.key, keyed.result))
+  let series = results.map(keyed => counts-series(keyed.key, keyed.result))
   let arrangements = series.map(one => one.value.arrangement).dedup()
 
   if arrangements.len() <= 1 { return counts-picture(series, path) }
@@ -461,151 +471,94 @@
   stack(dir: ttb, spacing: space.loose, ..series.map(one => block(breakable: false, counts-picture((one,), path + (one.key,)))))
 }
 
-// The limits of a scatter axis: on a logarithmic axis whole decades, starting a little
-// below the decade under the smallest positive value when values at or below zero are
-// drawn there, at the zero tick; else the values with a twentieth of their span around them.
-#let scatter-limits(values, scale) = {
-  if scale != "logarithmic" {
-    let (lower, upper) = (calc.min(..values), calc.max(..values))
-    let margin = if upper > lower { (upper - lower) / 20 } else { calc.max(1, calc.abs(upper)) / 20 }
+#let decade(value) = calc.pow(10.0, calc.floor(calc.log(value)))
 
-    return (lim: (lower - margin, upper + margin), zero: none)
+// Tick labels of a symmetric logarithmic axis: zero and the decades, none on the ticks
+// inside the linear stretch below the threshold.
+#let symlog-ticks(threshold) = (ticks, ..rest) => ticks.map(tick => {
+  if tick == 0 or calc.abs(tick) >= threshold { shortest(tick) }
+})
+
+// A scatter axis: linear with a twentieth of the span around the values; logarithmic over
+// whole decades; symmetric logarithmic, linear below the decade of the smallest positive
+// value, when a value at or below zero is drawn on a logarithmic axis.
+#let scatter-axis(values, scale) = {
+  let (lowest, highest) = (calc.min(..values), calc.max(..values))
+
+  if scale != "logarithmic" {
+    let margin = if highest > lowest { (highest - lowest) / 20 } else { calc.max(1, calc.abs(highest)) / 20 }
+
+    return (scale: "linear", lim: (lowest - margin, highest + margin), ticks: number-ticks)
   }
 
   let positive = values.filter(value => value > 0)
   let smallest = if positive.len() == 0 { 1 } else { calc.min(..positive) }
   let largest = if positive.len() == 0 { 1 } else { calc.max(..positive) }
-  let zeros = positive.len() < values.len()
-  let start = calc.floor(calc.log(smallest)) - (if zeros { 1 } else { 0 })
-  let stop = calc.max(calc.ceil(calc.log(largest)), start + 1)
-  let zero = if zeros { calc.pow(10.0, start) }
+  let top = calc.max(decade(largest) * 10, decade(smallest) * 10)
 
-  (lim: (if zeros { zero / chart.zero-margin } else { calc.pow(10.0, start) }, calc.pow(10.0, stop)), zero: zero)
+  if lowest > 0 { return (scale: "log", lim: (decade(smallest), top), ticks: number-ticks) }
+
+  let threshold = decade(smallest)
+  let bottom = if lowest == 0 { 0 } else { -decade(-lowest) * 10 }
+
+  (scale: lq.scale.symlog(threshold: threshold), lim: (bottom, top), ticks: symlog-ticks(threshold))
 }
-
-// Where on the plot a value lies, in points from the axis start, for placing labels.
-#let scatter-position(value, axis, scale, length) = {
-  let (lower, upper) = axis.lim
-
-  if scale == "logarithmic" {
-    length * (calc.log(value) - calc.log(lower)) / (calc.log(upper) - calc.log(lower))
-  } else {
-    length * (value - lower) / (upper - lower)
-  }
-}
-
-// The labels of a scatter placed left of their points, else right, above or below,
-// wherever they stay inside the plot and meet no label placed before; the rest are
-// listed under the chart.
-#let scatter-labels(placed, size-of, plot-size) = {
-  let boxes = ()
-  let kept = ()
-  let left-out = ()
-  let gap = space.hair + chart.point / 2
-
-  for point in placed {
-    let (label-width, label-height) = size-of(point.label)
-    let options = (
-      (dx: -gap - label-width, dy: -label-height / 2, align: right + horizon),
-      (dx: gap, dy: -label-height / 2, align: left + horizon),
-      (dx: -label-width / 2, dy: -gap - label-height, align: center + bottom),
-      (dx: -label-width / 2, dy: gap, align: center + top),
-    )
-    let chosen = options.find(option => {
-      let left = point.x + option.dx
-      let top = point.y + option.dy
-      let inside = left >= 0pt and top >= 0pt and left + label-width <= plot-size and top + label-height <= plot-size
-
-      inside and boxes.all(other => (
-        left + label-width + chart.label-gap <= other.left
-          or left >= other.left + other.width + chart.label-gap
-          or top + label-height + chart.label-gap <= other.top
-          or top >= other.top + other.height + chart.label-gap
-      ))
-    })
-
-    if chosen == none {
-      left-out.push(point.label)
-    } else {
-      boxes.push((left: point.x + chosen.dx, top: point.y + chosen.dy, width: label-width, height: label-height))
-      kept.push((point: point, align: chosen.align))
-    }
-  }
-
-  (kept: kept, left-out: left-out)
-}
-
-#let scatter-axis(axis, scale) = (
-  subticks: none,
-  format-ticks: number-ticks(zero: axis.zero),
-  exponent: if scale == "logarithmic" { none } else { auto },
-)
 
 #let scatter-chart(value, path) = {
   if value.points.len() == 0 { return rendered(path, "scatter", "none") + secondary[no values] }
 
-  let logarithmic(scale) = scale == "logarithmic"
-  let x-axis = scatter-limits(value.points.map(point => point.first()), value.x_scale)
-  let y-axis = scatter-limits(value.points.map(point => point.last()), value.y_scale)
-  let at-zero(value, axis) = if axis.zero != none and value <= 0 { axis.zero } else { value }
-  let drawn = value.points.map(((x, y)) => (at-zero(x, x-axis), at-zero(y, y-axis)))
-  let placed = value.labels.map(item => {
-    let (x, y) = drawn.at(item.index)
-
-    (
-      x: scatter-position(x, x-axis, value.x_scale, chart.scatter),
-      y: chart.scatter - scatter-position(y, y-axis, value.y_scale, chart.scatter),
-      data: (x, y),
-      label: item.label,
-    )
-  })
-  let measured = label => {
-    let box-size = measure(text(size: size.tiny, label))
-
-    (box-size.width, box-size.height)
-  }
-  let lower(axis) = if axis.zero == none { axis.lim.first() } else { axis.zero }
-  let diagonal-start = calc.max(lower(x-axis), lower(y-axis))
+  let x-axis = scatter-axis(value.points.map(point => point.first()), value.x_scale)
+  let y-axis = scatter-axis(value.points.map(point => point.last()), value.y_scale)
+  let numbered = value.labels.enumerate().map(((position, item)) => (
+    number: position + 1,
+    point: value.points.at(item.index),
+    label: item.label,
+  ))
+  let diagonal-start = calc.max(x-axis.lim.first(), y-axis.lim.first())
   let diagonal-end = calc.min(x-axis.lim.last(), y-axis.lim.last())
   let diagonal = if value.diagonal and diagonal-start < diagonal-end {
     (lq.line((diagonal-start, diagonal-start), (diagonal-end, diagonal-end), stroke: lines.spine, z-index: 1),)
   } else { () }
 
-  context block(breakable: false, {
-    let (kept, left-out) = scatter-labels(placed, measured, chart.scatter)
-
+  block(breakable: false, context {
     rendered(path, "scatter", "scatter")
     lq.diagram(
       width: chart.scatter,
       height: chart.scatter,
       margin: 0%,
-      xscale: if logarithmic(value.x_scale) { "log" } else { "linear" },
-      yscale: if logarithmic(value.y_scale) { "log" } else { "linear" },
+      xscale: x-axis.scale,
+      yscale: y-axis.scale,
       xlim: x-axis.lim,
       ylim: y-axis.lim,
-      xaxis: scatter-axis(x-axis, value.x_scale),
-      yaxis: scatter-axis(y-axis, value.y_scale),
+      xaxis: (subticks: none, format-ticks: x-axis.ticks),
+      yaxis: (subticks: none, format-ticks: y-axis.ticks),
       xlabel: value.x_label,
       ylabel: value.y_label,
+      legend: below-axis(value.x_label),
       ..diagonal,
       lq.scatter(
-        drawn.map(point => point.first()),
-        drawn.map(point => point.last()),
+        value.points.map(point => point.first()),
+        value.points.map(point => point.last()),
         color: palette.series.first(),
         size: chart.point,
         stroke: 0.5pt + white,
       ),
-      ..kept.map(found => lq.place(
-        found.point.data.first(),
-        found.point.data.last(),
-        pad(space.hair + chart.point / 2, text(size: size.tiny, fill: palette.ink, found.point.label)),
-        align: found.align,
+      ..numbered.map(one => lq.scatter(
+        (one.point.first(),),
+        (one.point.last(),),
+        color: palette.navy,
+        size: chart.point,
+        stroke: 0.5pt + white,
+        z-index: 3,
+        label: [#strong(str(one.number)) #one.label],
+      )),
+      ..numbered.map(one => lq.place(
+        one.point.first(),
+        one.point.last(),
+        pad(left: chart.point / 2 + space.hair, text(size: size.tiny, weight: "semibold", fill: palette.navy, str(one.number))),
+        align: left + horizon,
       )),
     )
-
-    if left-out.len() > 0 {
-      block(above: space.snug, below: 0pt, secondary[Not labelled for lack of room: #left-out.join(", ").])
-    }
   })
 }
 

@@ -1,7 +1,7 @@
 import math
 import re
 import unittest
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import BinaryIO, Dict, Literal, Mapping, Optional, Union
 
 import polars as pl
@@ -9,10 +9,12 @@ import pytest
 from graphrecords import QueryError, nodes
 from graphrecords.types import Value
 
+from medrecords.evaluation._json import Json, JsonObject
 from medrecords.evaluation.analytic import (
     Analytic,
     Arrangement,
     Assessment,
+    Bin,
     Bins,
     Counts,
     Derivation,
@@ -41,16 +43,53 @@ def create_distribution() -> Distribution:
     return Distribution([4, 1, 3, 2, 10])
 
 
-def create_statistics() -> Statistics:
+SINCE = datetime(2026, 9, 2, tzinfo=timezone.utc)
+SINCE_DOCUMENT: Dict[str, Json] = {
+    "kind": "datetime",
+    "year": 2026,
+    "month": 9,
+    "day": 2,
+    "hour": 0,
+    "minute": 0,
+    "second": 0,
+    "microsecond": 0,
+    "offset": 0,
+}
+INFINITY_DOCUMENT: Dict[str, Json] = {"kind": "float", "value": "inf"}
+
+
+def create_statistics(
+    count: int = 5,
+    mean: float = 4.0,
+    standard_deviation: Optional[float] = math.sqrt(12.5),
+    minimum: float = 1,
+    lower_quartile: float = 2,
+    median: float = 3,
+    upper_quartile: float = 4,
+    maximum: float = 10,
+) -> Statistics:
+    return Statistics(
+        count=count,
+        mean=mean,
+        standard_deviation=standard_deviation,
+        minimum=minimum,
+        lower_quartile=lower_quartile,
+        median=median,
+        upper_quartile=upper_quartile,
+        maximum=maximum,
+    )
+
+
+def create_statistics_document() -> Dict[str, Json]:
     return {
         "count": 5,
         "mean": 4.0,
         "standard_deviation": math.sqrt(12.5),
-        "minimum": 1.0,
-        "lower_quartile": 2.0,
-        "median": 3.0,
-        "upper_quartile": 4.0,
-        "maximum": 10.0,
+        "minimum": 1,
+        "lower_quartile": 2,
+        "median": 3,
+        "upper_quartile": 4,
+        "maximum": 10,
     }
 
 
@@ -143,6 +182,58 @@ class SavingFigure:
         target.write(b"<svg/>")
 
 
+def create_table_document() -> Dict[str, Json]:
+    return {"headings": ["a"], "rows": [[1]], "units": [None], "printed_rows": None}
+
+
+def create_histogram_document() -> Dict[str, Json]:
+    return {
+        "edges": [0.0, 1.0],
+        "counts": [3],
+        "below_count": 1,
+        "above_count": 2,
+        "statistics": None,
+        "scale": "linear",
+        "whole_numbers": False,
+        "value_label": None,
+        "count_label": None,
+        "arrangement": None,
+    }
+
+
+def create_distribution_document() -> Dict[str, Json]:
+    return {
+        "values": [1.0, 2.0],
+        "bins": None,
+        "value_label": None,
+        "count_label": None,
+        "arrangement": None,
+    }
+
+
+def create_counts_document() -> Dict[str, Json]:
+    return {
+        "counts": [{"value": "sit", "count": 2}],
+        "total": 2,
+        "value_label": None,
+        "count_label": None,
+        "remainder_label": None,
+        "arrangement": None,
+    }
+
+
+def create_scatter_document() -> Dict[str, Json]:
+    return {
+        "points": [[0.1, 0.2], [0.5, 0.4]],
+        "x_label": "real",
+        "y_label": "synthetic",
+        "x_scale": "logarithmic",
+        "y_scale": "linear",
+        "labels": [{"index": 1, "label": "lorem"}],
+        "diagonal": True,
+    }
+
+
 class TestTable(unittest.TestCase):
     def test_init(self) -> None:
         table = Table(["amet", "elit"], [[1, "sed"], [None, 2.5]])
@@ -157,6 +248,10 @@ class TestTable(unittest.TestCase):
         assert Table(["amet", 2024], [[1, 0.5]], units={2024: Unit.Share}).units == {
             2024: Unit.Share
         }
+        assert table.printed_rows is None
+        assert Table(["amet"], [[1], [2], [3]], printed_rows=2).printed_rows == 2
+        assert Table(["amet"], [[1], [2], [3]], printed_rows=2).rows == [[1], [2], [3]]
+        assert Table(["amet"], [[1]], printed_rows=0).printed_rows == 0
 
     def test_invalid_init(self) -> None:
         with pytest.raises(ValueError, match="one cell per heading"):
@@ -167,6 +262,9 @@ class TestTable(unittest.TestCase):
 
         with pytest.raises(ValueError, match="names the heading 'elit', which"):
             Table(["amet"], [[1]], units={"elit": Unit.Share})
+
+        with pytest.raises(ValueError, match="cannot print fewer than zero rows"):
+            Table(["amet"], [[1]], printed_rows=-1)
 
     def test_from_polars(self) -> None:
         dataframe = pl.DataFrame(
@@ -199,6 +297,9 @@ class TestTable(unittest.TestCase):
         assert Table.from_polars(
             pl.DataFrame({"amet": [0.5]}), units={"amet": Unit.Share}
         ) == Table(["amet"], [[0.5]], units={"amet": Unit.Share})
+        assert Table.from_polars(
+            pl.DataFrame({"amet": [1, 2, 3]}), printed_rows=2
+        ) == Table(["amet"], [[1], [2], [3]], printed_rows=2)
 
     def test_invalid_from_polars(self) -> None:
         with pytest.raises(TypeError, match=r"column 'amet' holds datetime\.date"):
@@ -258,6 +359,7 @@ class TestTable(unittest.TestCase):
         assert table != Table(["amet"], [[1]])
         assert table != Table(["elit"], [[1], [2]])
         assert table != Table(["amet"], [[1], [2]], units={"amet": Unit.Share})
+        assert table != Table(["amet"], [[1], [2]], printed_rows=1)
         assert table != "amet"
 
     def test_repr(self) -> None:
@@ -265,6 +367,90 @@ class TestTable(unittest.TestCase):
         assert repr(Table(["amet"], [[1]], units={"amet": Unit.Share})) == (
             "Table(headings=['amet'], rows=[[1]], units={'amet': <Unit.Share: 'share'>})"
         )
+        assert repr(Table(["amet"], [[1], [2]], printed_rows=1)) == (
+            "Table(headings=['amet'], rows=[[1], [2]], printed_rows=1)"
+        )
+
+    def test_from_document(self) -> None:
+        document: Dict[str, Json] = {
+            "headings": ["a", 2024],
+            "rows": [[1, "sit"], [{"kind": "path", "names": ["elit", 2]}, None]],
+            "units": [None, "share"],
+            "printed_rows": 1,
+        }
+
+        assert Table._from_document(JsonObject(document, "report")) == Table(
+            ["a", 2024],
+            [[1, "sit"], [("elit", 2), None]],
+            units={2024: Unit.Share},
+            printed_rows=1,
+        )
+
+    def test_invalid_from_document(self) -> None:
+        unlabelled: Dict[str, Json] = {**create_table_document(), "headings": [1.5]}
+        flat: Dict[str, Json] = {**create_table_document(), "rows": [1]}
+        wide: Dict[str, Json] = {**create_table_document(), "rows": [[1, 2]]}
+        unitless: Dict[str, Json] = {**create_table_document(), "units": ["lorem"]}
+        uneven: Dict[str, Json] = {**create_table_document(), "units": []}
+        unprinted: Dict[str, Json] = {**create_table_document(), "printed_rows": -1}
+        unstated = create_table_document()
+        del unstated["printed_rows"]
+
+        with pytest.raises(
+            ValueError, match=re.escape("expected an identifier at report.headings[0]")
+        ):
+            Table._from_document(JsonObject(unlabelled, "report"))
+
+        with pytest.raises(
+            ValueError, match=re.escape("expected an array at report.rows")
+        ):
+            Table._from_document(JsonObject(flat, "report"))
+
+        with pytest.raises(
+            ValueError,
+            match=re.escape("every row must hold one cell per heading at report"),
+        ):
+            Table._from_document(JsonObject(wide, "report"))
+
+        with pytest.raises(
+            ValueError, match=re.escape("expected a value of Unit at report.units[0]")
+        ):
+            Table._from_document(JsonObject(unitless, "report"))
+
+        with pytest.raises(
+            ValueError,
+            match=re.escape("expected one unit per heading at report.units"),
+        ):
+            Table._from_document(JsonObject(uneven, "report"))
+
+        with pytest.raises(
+            ValueError, match=re.escape("cannot print fewer than zero rows at report")
+        ):
+            Table._from_document(JsonObject(unprinted, "report"))
+
+        with pytest.raises(
+            ValueError, match=re.escape("expected 'printed_rows' at report")
+        ):
+            Table._from_document(JsonObject(unstated, "report"))
+
+    def test_to_document(self) -> None:
+        table = Table(
+            ["a", 2024],
+            [[1, "sit"], [("elit", 2), math.inf]],
+            units={2024: Unit.Share},
+            printed_rows=1,
+        )
+
+        assert table._to_document() == {
+            "kind": "table",
+            "headings": ["a", 2024],
+            "rows": [
+                [1, "sit"],
+                [{"kind": "path", "names": ["elit", 2]}, INFINITY_DOCUMENT],
+            ],
+            "units": [None, "share"],
+            "printed_rows": 1,
+        }
 
 
 class TestPlot(unittest.TestCase):
@@ -288,6 +474,14 @@ class TestPlot(unittest.TestCase):
 
     def test_repr(self) -> None:
         assert repr(Plot("<svg/>")) == "Plot(6 characters of SVG)"
+
+    def test_from_document(self) -> None:
+        assert Plot._from_document(JsonObject({"svg": "<svg/>"}, "report")) == Plot(
+            "<svg/>"
+        )
+
+    def test_to_document(self) -> None:
+        assert Plot("<svg/>")._to_document() == {"kind": "plot", "svg": "<svg/>"}
 
 
 class TestMeasurement(unittest.TestCase):
@@ -370,6 +564,37 @@ class TestMeasurement(unittest.TestCase):
             "unit=<Unit.Share: 'share'>)"
         )
 
+    def test_from_document(self) -> None:
+        document: Dict[str, Json] = {
+            "value": 0.5,
+            "lower": None,
+            "upper": INFINITY_DOCUMENT,
+            "p_value": None,
+            "unit": "share",
+        }
+
+        assert Measurement._from_document(
+            JsonObject(document, "report")
+        ) == Measurement(0.5, upper=math.inf, unit=Unit.Share)
+
+    def test_to_document(self) -> None:
+        assert Measurement(0.5, upper=math.inf, unit=Unit.Share)._to_document() == {
+            "kind": "measurement",
+            "value": 0.5,
+            "lower": None,
+            "upper": INFINITY_DOCUMENT,
+            "p_value": None,
+            "unit": "share",
+        }
+        assert Measurement(0.5, 0.1, 0.9, 0.01)._to_document() == {
+            "kind": "measurement",
+            "value": 0.5,
+            "lower": 0.1,
+            "upper": 0.9,
+            "p_value": 0.01,
+            "unit": None,
+        }
+
 
 class TestAssessment(unittest.TestCase):
     def test_init(self) -> None:
@@ -412,6 +637,117 @@ class TestAssessment(unittest.TestCase):
             "Assessment(0.5, 'at least 50.0%', passed=True, unit=<Unit.Share: 'share'>)"
         )
 
+    def test_from_document(self) -> None:
+        document: Dict[str, Json] = {
+            "value": SINCE_DOCUMENT,
+            "requirement_label": "after 2026",
+            "passed": True,
+            "unit": None,
+        }
+
+        assert Assessment._from_document(JsonObject(document, "report")) == Assessment(
+            SINCE, "after 2026", passed=True
+        )
+
+    def test_to_document(self) -> None:
+        assert Assessment(SINCE, "after 2026", passed=True)._to_document() == {
+            "kind": "assessment",
+            "value": SINCE_DOCUMENT,
+            "requirement_label": "after 2026",
+            "passed": True,
+            "unit": None,
+        }
+        assert Assessment(
+            0.5, "at least 90%", passed=False, unit=Unit.Share
+        )._to_document() == {
+            "kind": "assessment",
+            "value": 0.5,
+            "requirement_label": "at least 90%",
+            "passed": False,
+            "unit": "share",
+        }
+
+
+class TestBin(unittest.TestCase):
+    def test_init(self) -> None:
+        histogram_bin = Bin(0.0, 5.0, 4)
+
+        assert math.isclose(histogram_bin.lower, 0.0)
+        assert math.isclose(histogram_bin.upper, 5.0)
+        assert histogram_bin.count == 4
+
+    def test_eq(self) -> None:
+        assert Bin(0.0, 5.0, 4) == Bin(0.0, 5.0, 4)
+        assert Bin(0.0, 5.0, 4) != Bin(1.0, 5.0, 4)
+        assert Bin(0.0, 5.0, 4) != Bin(0.0, 6.0, 4)
+        assert Bin(0.0, 5.0, 4) != Bin(0.0, 5.0, 3)
+        assert Bin(0.0, 5.0, 4) != "lorem"
+
+    def test_repr(self) -> None:
+        assert repr(Bin(0.0, 5.0, 4)) == "Bin(lower=0.0, upper=5.0, count=4)"
+
+
+class TestStatistics(unittest.TestCase):
+    def test_init(self) -> None:
+        statistics = create_statistics()
+
+        assert statistics.count == 5
+        assert math.isclose(statistics.mean, 4.0)
+        assert statistics.standard_deviation == math.sqrt(12.5)
+        assert statistics.minimum == 1
+        assert statistics.lower_quartile == 2
+        assert statistics.median == 3
+        assert statistics.upper_quartile == 4
+        assert statistics.maximum == 10
+
+    def test_to_document(self) -> None:
+        single = Statistics(
+            count=1,
+            mean=math.inf,
+            standard_deviation=None,
+            minimum=1,
+            lower_quartile=1,
+            median=1,
+            upper_quartile=1,
+            maximum=1,
+        )
+
+        assert create_statistics()._to_document() == create_statistics_document()
+        assert single._to_document() == {
+            "count": 1,
+            "mean": INFINITY_DOCUMENT,
+            "standard_deviation": None,
+            "minimum": 1,
+            "lower_quartile": 1,
+            "median": 1,
+            "upper_quartile": 1,
+            "maximum": 1,
+        }
+
+    def test_from_document(self) -> None:
+        document = JsonObject(create_statistics_document(), "report")
+
+        assert Statistics._from_document(document) == create_statistics()
+
+    def test_eq(self) -> None:
+        statistics = create_statistics()
+
+        assert statistics == create_statistics()
+        assert statistics != create_statistics(count=6)
+        assert statistics != create_statistics(mean=5.0)
+        assert statistics != create_statistics(standard_deviation=None)
+        assert statistics != create_statistics(minimum=0)
+        assert statistics != create_statistics(lower_quartile=1)
+        assert statistics != create_statistics(median=2)
+        assert statistics != create_statistics(upper_quartile=5)
+        assert statistics != create_statistics(maximum=11)
+        assert statistics != "lorem"
+
+    def test_repr(self) -> None:
+        assert repr(create_statistics()) == (
+            f"Statistics(count=5, mean=4.0, standard_deviation={math.sqrt(12.5)!r})"
+        )
+
 
 class TestBins(unittest.TestCase):
     def test_init(self) -> None:
@@ -451,15 +787,14 @@ class TestBins(unittest.TestCase):
     def test_describe(self) -> None:
         assert Bins().describe() == "chosen from the values"
         assert Bins(count=30).describe() == (
-            "about 30 bars, or one per value for values without decimals that span "
-            "at most 120 numbers"
+            "about 30 bars, or one per value for integers that span at most 120 numbers"
         )
         assert Bins(
             count=4, scale=Scale.Logarithmic, outside_share=0.01
         ).describe() == (
-            "about 4 bars, or one per value for values without decimals that span "
-            "at most 16 numbers; logarithmic scale; at most 1.0% of the values "
-            "outside the axis at each end"
+            "about 4 bars, or one per value for integers that span at most 16 "
+            "numbers; logarithmic scale; at most 1% of the values outside the axis "
+            "at each end"
         )
 
     def test_eq(self) -> None:
@@ -477,6 +812,33 @@ class TestBins(unittest.TestCase):
         assert repr(Bins(count=4, scale=Scale.Linear)) == (
             "Bins(count=4, scale=<Scale.Linear: 'linear'>, outside_share=None)"
         )
+
+    def test_from_document(self) -> None:
+        unset: Dict[str, Json] = {"count": None, "scale": None, "outside_share": None}
+
+        assert Bins._from_document(JsonObject(unset, "report")) == Bins()
+
+    def test_invalid_from_document(self) -> None:
+        binless: Dict[str, Json] = {"count": 0, "scale": None, "outside_share": None}
+
+        with pytest.raises(
+            ValueError, match=re.escape("a histogram needs at least one bin at report")
+        ):
+            Bins._from_document(JsonObject(binless, "report"))
+
+    def test_to_document(self) -> None:
+        assert Bins()._to_document() == {
+            "count": None,
+            "scale": None,
+            "outside_share": None,
+        }
+        assert Bins(
+            count=3, scale=Scale.Logarithmic, outside_share=0.0
+        )._to_document() == {
+            "count": 3,
+            "scale": "logarithmic",
+            "outside_share": 0.0,
+        }
 
 
 class TestDistribution(unittest.TestCase):
@@ -520,8 +882,10 @@ class TestDistribution(unittest.TestCase):
         assert math.isclose(create_distribution().mean, 4.0)
 
     def test_std(self) -> None:
-        assert math.isclose(create_distribution().standard_deviation, math.sqrt(12.5))
-        assert math.isclose(Distribution([2.0]).standard_deviation, 0.0)
+        assert math.isclose(
+            create_distribution().standard_deviation or 0.0, math.sqrt(12.5)
+        )
+        assert Distribution([2.0]).standard_deviation is None
 
     def test_minimum(self) -> None:
         assert math.isclose(create_distribution().minimum, 1.0)
@@ -545,8 +909,6 @@ class TestDistribution(unittest.TestCase):
         statistics = create_distribution().statistics
 
         assert statistics == create_statistics()
-        assert statistics["count"] == 5
-        assert math.isclose(statistics["standard_deviation"], math.sqrt(12.5))
 
     def test_histogram(self) -> None:
         histogram = create_distribution().histogram()
@@ -589,7 +951,7 @@ class TestDistribution(unittest.TestCase):
         assert [
             histogram.counts
             for histogram in Distribution.shared_histograms(
-                [Distribution([1.0, 2.0]), Distribution([2.0, 3.0])]
+                [Distribution([1, 2]), Distribution([2, 3])]
             )
         ] == [[1, 1, 0], [0, 1, 1]]
         assert Distribution.shared_histograms([create_distribution()]) == [
@@ -598,11 +960,11 @@ class TestDistribution(unittest.TestCase):
 
         logarithmic = Bins(scale=Scale.Logarithmic)
         assert Distribution.shared_histograms(
-            [Distribution([1.0, 2.0, 3.0, 9.0], bins=logarithmic)]
+            [Distribution([1, 2, 3, 9], bins=logarithmic)]
         )[0].edges == [0.5, 1.5, 4.5, 13.5]
-        assert Distribution.shared_histograms(
-            [Distribution([0.0, 0.0], bins=logarithmic)]
-        )[0].edges == [-0.5, 0.5]
+        assert Distribution.shared_histograms([Distribution([0, 0], bins=logarithmic)])[
+            0
+        ].edges == [-0.5, 0.5]
 
         counted = Distribution.shared_histograms(
             [Distribution(range(21))], Bins(count=2)
@@ -639,14 +1001,7 @@ class TestDistribution(unittest.TestCase):
         ).histogram()
 
         assert tailed.scale is Scale.Logarithmic
-        assert [round(edge, 9) for edge in tailed.edges] == [
-            0.1,
-            1.0,
-            10.0,
-            100.0,
-            1000.0,
-            10000.0,
-        ]
+        assert tailed.edges == [0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0]
         assert tailed.counts == [3, 2, 2, 2, 1]
         assert Distribution(
             [-1000.5, -10.5, -1.5, -0.5, 0.5, 1.5, 10.5, 1000.5]
@@ -654,6 +1009,21 @@ class TestDistribution(unittest.TestCase):
         assert Distribution([1.5, 2.5, 3.5]).histogram(
             Bins(count=2, scale=Scale.Logarithmic)
         ).edges == [1.0, 5.0]
+
+        narrow = Distribution([2.0, 9.0]).histogram(
+            Bins(count=10, scale=Scale.Logarithmic)
+        )
+
+        assert len(narrow.edges) == 8
+        assert math.isclose(narrow.edges[0], 2.0)
+        assert math.isclose(narrow.edges[-1], 10.0)
+        assert all(
+            math.isclose(upper / lower, narrow.edges[1] / narrow.edges[0])
+            for lower, upper in zip(narrow.edges[:-1], narrow.edges[1:], strict=True)
+        )
+        assert Distribution([0.001, 1.0, 1e9]).histogram(
+            Bins(count=12, scale=Scale.Logarithmic)
+        ).edges == [10.0**power for power in range(-3, 10)]
         assert (
             Distribution([-1.5, -2.5]).histogram(Bins(scale=Scale.Logarithmic)).scale
             is Scale.Linear
@@ -684,8 +1054,8 @@ class TestDistribution(unittest.TestCase):
         )
         assert Distribution.shared_histograms(
             [
-                Distribution([1.0, 2.0], bins=Bins(count=1)),
-                Distribution([1.0, 2.0], bins=Bins(count=8)),
+                Distribution([1, 2], bins=Bins(count=1)),
+                Distribution([1, 2], bins=Bins(count=8)),
             ],
             Bins(outside_share=0.0),
         )[0].edges == [0.5, 1.5, 2.5]
@@ -727,16 +1097,34 @@ class TestDistribution(unittest.TestCase):
                 ]
             )
 
-    def test_agreeing(self) -> None:
+    def test_conflict(self) -> None:
         linear = Distribution([1.0], bins=Bins(scale=Scale.Linear))
         logarithmic = Distribution([1.0], bins=Bins(scale=Scale.Logarithmic))
         trimmed = Distribution([1.0], bins=Bins(outside_share=0.1))
         untrimmed = Distribution([1.0], bins=Bins(outside_share=0.0))
 
-        assert Distribution._agreeing([linear, linear, Distribution([2.0])])
-        assert Distribution._agreeing([trimmed, Distribution([2.0], bins=Bins())])
-        assert not Distribution._agreeing([linear, logarithmic])
-        assert not Distribution._agreeing([trimmed, untrimmed])
+        assert (
+            Distribution._conflict([linear, linear, Distribution([2.0])], Bins())
+            is None
+        )
+        assert (
+            Distribution._conflict([trimmed, Distribution([2.0], bins=Bins())], Bins())
+            is None
+        )
+        assert Distribution._conflict([linear, logarithmic], Bins()) == (
+            "the distributions declare different scales"
+        )
+        assert (
+            Distribution._conflict([linear, logarithmic], Bins(scale=Scale.Linear))
+            is None
+        )
+        assert Distribution._conflict([trimmed, untrimmed], Bins()) == (
+            "the distributions declare different outside shares"
+        )
+
+    def test_whole_numbers(self) -> None:
+        assert create_distribution().whole_numbers
+        assert not Distribution([1, 2.0]).whole_numbers
 
     def test_eq(self) -> None:
         assert create_distribution() == Distribution([4, 1, 3, 2, 10])
@@ -754,6 +1142,97 @@ class TestDistribution(unittest.TestCase):
     def test_repr(self) -> None:
         assert repr(create_distribution()) == "Distribution(5 values)"
 
+    def test_from_document(self) -> None:
+        described: Dict[str, Json] = {
+            **create_distribution_document(),
+            "bins": {"count": 4, "scale": "logarithmic", "outside_share": 0.01},
+            "value_label": "age",
+            "count_label": "patients",
+            "arrangement": "overlay",
+        }
+
+        assert Distribution._from_document(
+            JsonObject(create_distribution_document(), "report")
+        ) == Distribution([1.0, 2.0])
+        assert Distribution._from_document(
+            JsonObject(described, "report")
+        ) == Distribution(
+            [1.0, 2.0],
+            bins=Bins(count=4, scale=Scale.Logarithmic, outside_share=0.01),
+            value_label="age",
+            count_label="patients",
+            arrangement=Arrangement.Overlay,
+        )
+
+    def test_invalid_from_document(self) -> None:
+        empty: Dict[str, Json] = {**create_distribution_document(), "values": []}
+        unarranged: Dict[str, Json] = {
+            **create_distribution_document(),
+            "arrangement": "lorem",
+        }
+
+        with pytest.raises(
+            ValueError,
+            match=re.escape("a distribution must hold at least one value at report"),
+        ):
+            Distribution._from_document(JsonObject(empty, "report"))
+
+        with pytest.raises(
+            ValueError,
+            match=re.escape("expected a value of Arrangement at report.arrangement"),
+        ):
+            Distribution._from_document(JsonObject(unarranged, "report"))
+
+    def test_to_document(self) -> None:
+        distribution = Distribution([1, 2, 3])
+
+        assert distribution._to_document() == {
+            "kind": "distribution",
+            "values": [1, 2, 3],
+            "bins": None,
+            "value_label": None,
+            "count_label": None,
+            "arrangement": None,
+            "statistics": distribution.statistics._to_document(),
+            "histogram": {
+                "edges": [0.5, 1.5, 2.5, 3.5],
+                "counts": [1, 1, 1],
+                "below_count": 0,
+                "above_count": 0,
+                "scale": "linear",
+                "whole_numbers": True,
+            },
+        }
+
+        described = Distribution(
+            [1.0, 20.0],
+            bins=Bins(count=3, scale=Scale.Logarithmic, outside_share=0.0),
+            value_label="dose",
+            count_label="prescriptions",
+            arrangement=Arrangement.Panels,
+        )
+        histogram = Histogram(
+            [2.0, 10.0], [0], below_count=1, above_count=1, scale=Scale.Logarithmic
+        )
+
+        assert described._to_document(histogram) == {
+            "kind": "distribution",
+            "values": [1.0, 20.0],
+            "bins": {"count": 3, "scale": "logarithmic", "outside_share": 0.0},
+            "value_label": "dose",
+            "count_label": "prescriptions",
+            "arrangement": "panels",
+            "statistics": described.statistics._to_document(),
+            "histogram": {
+                "edges": [2.0, 10.0],
+                "counts": [0],
+                "below_count": 1,
+                "above_count": 1,
+                "scale": "logarithmic",
+                "whole_numbers": False,
+            },
+        }
+
 
 class TestHistogram(unittest.TestCase):
     def test_init(self) -> None:
@@ -768,6 +1247,7 @@ class TestHistogram(unittest.TestCase):
         assert Histogram([0, 1], [0]).count == 0
         assert Histogram([0, 1], [0]).edges == [0.0, 1.0]
         assert histogram.scale is Scale.Linear
+        assert not histogram.whole_numbers
         assert histogram.value_label is None
         assert histogram.count_label is None
         assert histogram.arrangement is None
@@ -777,14 +1257,6 @@ class TestHistogram(unittest.TestCase):
 
         assert histogram.edges == [0.0, 5.0, 10.0]
         assert histogram.counts == [4, 1]
-
-        statistics = create_statistics()
-        statistics["count"] = 9
-        histogram = Histogram([0.0, 1.0], [1], statistics=statistics)
-        statistics["count"] = 1
-
-        assert histogram.statistics is not None
-        assert histogram.statistics["count"] == 9
 
     def test_invalid_init(self) -> None:
         with pytest.raises(ValueError, match="at least two edges"):
@@ -815,7 +1287,7 @@ class TestHistogram(unittest.TestCase):
 
     def test_from_values(self) -> None:
         assert Histogram.from_values([4, 1, 3, 2, 10], [0.0, 5.0, 10.0]) == Histogram(
-            [0.0, 5.0, 10.0], [4, 1], statistics=create_statistics()
+            [0.0, 5.0, 10.0], [4, 1], statistics=create_statistics(), whole_numbers=True
         )
         assert Histogram.from_values([4, 1, 3, 2, 10], [2.0, 4.0]) == Histogram(
             [2.0, 4.0],
@@ -823,6 +1295,7 @@ class TestHistogram(unittest.TestCase):
             below_count=1,
             above_count=1,
             statistics=create_statistics(),
+            whole_numbers=True,
         )
         assert Histogram.from_values([0.0, 5.0, 10.0], [0.0, 5.0, 10.0]).counts == [
             1,
@@ -904,10 +1377,7 @@ class TestHistogram(unittest.TestCase):
         assert create_histogram().count == 8
 
     def test_bins(self) -> None:
-        assert create_histogram().bins == [
-            {"lower": 0.0, "upper": 5.0, "count": 4},
-            {"lower": 5.0, "upper": 10.0, "count": 1},
-        ]
+        assert create_histogram().bins == [Bin(0.0, 5.0, 4), Bin(5.0, 10.0, 1)]
 
     def test_to_polars(self) -> None:
         dataframe = create_histogram().to_polars()
@@ -966,6 +1436,107 @@ class TestHistogram(unittest.TestCase):
 
     def test_repr(self) -> None:
         assert repr(create_histogram()) == "Histogram(2 bins, 8 values)"
+
+    def test_from_document(self) -> None:
+        described: Dict[str, Json] = {
+            **create_histogram_document(),
+            "statistics": create_statistics_document(),
+        }
+
+        assert Histogram._from_document(
+            JsonObject(create_histogram_document(), "report")
+        ) == (Histogram([0.0, 1.0], [3], below_count=1, above_count=2))
+        assert Histogram._from_document(JsonObject(described, "report")) == Histogram(
+            [0.0, 1.0],
+            [3],
+            below_count=1,
+            above_count=2,
+            statistics=create_statistics(),
+        )
+
+        labelled: Dict[str, Json] = {
+            **create_histogram_document(),
+            "edges": [1.0, 10.0],
+            "scale": "logarithmic",
+            "value_label": "dose",
+            "count_label": "prescriptions",
+            "arrangement": "panels",
+        }
+
+        assert Histogram._from_document(JsonObject(labelled, "report")) == Histogram(
+            [1.0, 10.0],
+            [3],
+            below_count=1,
+            above_count=2,
+            scale=Scale.Logarithmic,
+            value_label="dose",
+            count_label="prescriptions",
+            arrangement=Arrangement.Panels,
+        )
+
+    def test_invalid_from_document(self) -> None:
+        decreasing: Dict[str, Json] = {
+            **create_histogram_document(),
+            "edges": [1.0, 0.0],
+        }
+        fractional: Dict[str, Json] = {**create_histogram_document(), "counts": [1.5]}
+        unscaled: Dict[str, Json] = {**create_histogram_document(), "scale": "lorem"}
+
+        with pytest.raises(
+            ValueError,
+            match=re.escape("the edges of a histogram must be increasing at report"),
+        ):
+            Histogram._from_document(JsonObject(decreasing, "report"))
+
+        with pytest.raises(
+            ValueError, match=re.escape("expected an integer at report.counts")
+        ):
+            Histogram._from_document(JsonObject(fractional, "report"))
+
+        with pytest.raises(
+            ValueError, match=re.escape("expected a value of Scale at report.scale")
+        ):
+            Histogram._from_document(JsonObject(unscaled, "report"))
+
+    def test_whole_numbers(self) -> None:
+        assert not create_histogram().whole_numbers
+        assert Histogram([0.0, 1.0], [1], whole_numbers=True).whole_numbers
+
+    def test_to_document(self) -> None:
+        assert create_histogram()._to_document() == {
+            "kind": "histogram",
+            "edges": [0.0, 5.0, 10.0],
+            "counts": [4, 1],
+            "below_count": 1,
+            "above_count": 2,
+            "statistics": create_statistics_document(),
+            "scale": "linear",
+            "whole_numbers": False,
+            "value_label": None,
+            "count_label": None,
+            "arrangement": None,
+        }
+        assert Histogram(
+            [1.0, 10.0],
+            [0],
+            scale=Scale.Logarithmic,
+            whole_numbers=True,
+            value_label="dose",
+            count_label="prescriptions",
+            arrangement=Arrangement.Panels,
+        )._to_document() == {
+            "kind": "histogram",
+            "edges": [1.0, 10.0],
+            "counts": [0],
+            "below_count": 0,
+            "above_count": 0,
+            "statistics": None,
+            "scale": "logarithmic",
+            "whole_numbers": True,
+            "value_label": "dose",
+            "count_label": "prescriptions",
+            "arrangement": "panels",
+        }
 
 
 class TestCounts(unittest.TestCase):
@@ -1045,6 +1616,83 @@ class TestCounts(unittest.TestCase):
 
     def test_repr(self) -> None:
         assert repr(create_counts()) == "Counts(3 values of 5)"
+
+    def test_from_document(self) -> None:
+        document: Dict[str, Json] = {
+            **create_counts_document(),
+            "counts": [
+                {"value": "sit", "count": 2},
+                {"value": SINCE_DOCUMENT, "count": 1},
+            ],
+            "total": 4,
+            "value_label": "diagnosis",
+            "count_label": "patients",
+            "remainder_label": "rarer",
+            "arrangement": "overlay",
+        }
+
+        assert Counts._from_document(JsonObject(document, "report")) == Counts(
+            {"sit": 2, SINCE: 1},
+            4,
+            value_label="diagnosis",
+            count_label="patients",
+            remainder_label="rarer",
+            arrangement=Arrangement.Overlay,
+        )
+        assert Counts._from_document(
+            JsonObject(create_counts_document(), "report")
+        ) == Counts({"sit": 2})
+
+    def test_invalid_from_document(self) -> None:
+        unvalued: Dict[str, Json] = {
+            **create_counts_document(),
+            "counts": [{"count": 1}],
+            "total": 1,
+        }
+        exceeded: Dict[str, Json] = {**create_counts_document(), "total": 1}
+
+        with pytest.raises(
+            ValueError, match=re.escape("expected 'value' at report.counts[0]")
+        ):
+            Counts._from_document(JsonObject(unvalued, "report"))
+
+        with pytest.raises(
+            ValueError,
+            match=re.escape(
+                "the total must be at least the sum of the counts at report"
+            ),
+        ):
+            Counts._from_document(JsonObject(exceeded, "report"))
+
+    def test_to_document(self) -> None:
+        assert create_counts()._to_document() == {
+            "kind": "counts",
+            "counts": [
+                {"value": "dolor", "count": 2},
+                {"value": "elit", "count": 1},
+                {"value": None, "count": 1},
+            ],
+            "total": 5,
+            "value_label": None,
+            "count_label": None,
+            "remainder_label": None,
+            "arrangement": None,
+        }
+        assert Counts(
+            {SINCE: 1},
+            value_label="diagnosis",
+            count_label="patients",
+            remainder_label="rarer",
+            arrangement=Arrangement.Overlay,
+        )._to_document() == {
+            "kind": "counts",
+            "counts": [{"value": SINCE_DOCUMENT, "count": 1}],
+            "total": 1,
+            "value_label": "diagnosis",
+            "count_label": "patients",
+            "remainder_label": "rarer",
+            "arrangement": "overlay",
+        }
 
 
 class TestScatter(unittest.TestCase):
@@ -1153,6 +1801,52 @@ class TestScatter(unittest.TestCase):
 
     def test_repr(self) -> None:
         assert repr(create_scatter()) == "Scatter(3 points, 1 labelled)"
+
+    def test_from_document(self) -> None:
+        assert Scatter._from_document(
+            JsonObject(create_scatter_document(), "report")
+        ) == Scatter(
+            [(0.1, 0.2), (0.5, 0.4)],
+            x_label="real",
+            y_label="synthetic",
+            x_scale=Scale.Logarithmic,
+            labels={1: "lorem"},
+            diagonal=True,
+        )
+
+    def test_invalid_from_document(self) -> None:
+        short: Dict[str, Json] = {**create_scatter_document(), "points": [[0.1]]}
+        unlabelled: Dict[str, Json] = {
+            **create_scatter_document(),
+            "labels": [{"index": 2, "label": "lorem"}],
+        }
+        unscaled: Dict[str, Json] = {**create_scatter_document(), "y_scale": 1}
+
+        with pytest.raises(
+            ValueError, match=re.escape("expected two coordinates at report.points[0]")
+        ):
+            Scatter._from_document(JsonObject(short, "report"))
+
+        with pytest.raises(
+            ValueError,
+            match=re.escape("names the point 2, which the scatter does not have"),
+        ):
+            Scatter._from_document(JsonObject(unlabelled, "report"))
+
+        with pytest.raises(
+            ValueError, match=re.escape("expected a value of Scale at report.y_scale")
+        ):
+            Scatter._from_document(JsonObject(unscaled, "report"))
+
+    def test_to_document(self) -> None:
+        assert Scatter(
+            [(0.1, 0.2), (0.5, 0.4)],
+            x_label="real",
+            y_label="synthetic",
+            x_scale=Scale.Logarithmic,
+            labels={1: "lorem"},
+            diagonal=True,
+        )._to_document() == {"kind": "scatter", **create_scatter_document()}
 
 
 class TestAnalytic(unittest.TestCase):

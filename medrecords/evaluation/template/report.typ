@@ -6,7 +6,7 @@
 #import "front.typ": contents-page, cover-block, cover-page, has-cover, running-footer, running-header
 #import "details.typ": run-details-page
 
-#let root = collect(report.entries, (), report.inputs)
+#let root = collect(report.entries, ())
 
 #set document(
   title: report.name,
@@ -34,9 +34,6 @@
 #show heading.where(level: 5): set text(size: size.body, style: "italic")
 #show heading: it => if it.level <= 5 { it } else { text(size: size.body, style: "italic", it) }
 #show outline.entry.where(level: 1): set block(above: space.loose)
-#show regex("\\S{" + str(longest-word) + ",}"): it => {
-  it.text.clusters().chunks(word-piece).map(piece => piece.join()).join(sym.zws)
-}
 
 #if has-cover {
   cover-page()
@@ -60,6 +57,6 @@
 
 #render(root, 1, (), true, listed: false)
 
-#appendix(appendix-groups(report.entries, (), report.inputs))
+#appendix(appendix-groups(report.entries, ()))
 
 #if options.run_details { run-details-page() }

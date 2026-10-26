@@ -11,7 +11,6 @@ from medrecords.evaluation.analytic import (
 )
 from medrecords.evaluation.entry import (
     Failure,
-    InputEntry,
     KeyedAnalyticEntry,
     KeyedGroupEntry,
     Layout,
@@ -187,7 +186,6 @@ class TestGroup(unittest.TestCase):
 
         assert create_report(group).entries == []
         nested = create_report(added).group("nested")
-        assert nested.inputs == [InputEntry("medrecord", 2, 0)]
         assert nested.derivation is None
         assert nested.analytic("count").result == 2
         assert nested.layout is Layout.Section
@@ -219,7 +217,6 @@ class TestGroup(unittest.TestCase):
 
         assert create_report(group).entries == []
         first = create_report(added).group("first")
-        assert first.inputs == [InputEntry("medrecord", 1, 0)]
         assert first.derivation is not None
         assert first.analytic("count").result == 1
         assert (
@@ -250,7 +247,6 @@ class TestGroup(unittest.TestCase):
             )
         ).group("first")
 
-        assert failing.inputs == [InputEntry("medrecord", 2, 0)]
         assert failing.entries == []
         assert failing.derivation is not None
         assert isinstance(failing.derivation.failure, Failure)
@@ -269,7 +265,6 @@ class TestGroup(unittest.TestCase):
         keyed = create_report(added).group("nodes")
         assert [entry.name for entry in keyed.entries] == ["lorem", "ipsum"]
         assert keyed.derivation is not None
-        assert keyed.group("lorem").inputs == [InputEntry("medrecord", 1, 0)]
         assert keyed.group("lorem").analytic("count").result == 1
 
         positioned = create_report(
@@ -313,7 +308,6 @@ class TestGroup(unittest.TestCase):
             )
         ).group("nodes")
 
-        assert failing.inputs == [InputEntry("medrecord", 2, 0)]
         assert failing.entries == []
         assert failing.derivation is not None
         assert isinstance(failing.derivation.failure, Failure)
@@ -377,7 +371,6 @@ class TestGroup(unittest.TestCase):
         assert create_report(group).entries == []
         across = create_report(added).group("nodes")
         assert across.layout is Layout.Inline
-        assert across.inputs == [InputEntry("lorem", 1, 0), InputEntry("ipsum", 1, 0)]
         assert across.derivation is not None
         assert [type(entry) for entry in across.entries] == [
             KeyedAnalyticEntry,
@@ -391,13 +384,11 @@ class TestGroup(unittest.TestCase):
         assert count.result("lorem") == 1
         assert count.result("ipsum") == 1
         nested = across.keyed_group("nested")
-        assert nested.inputs == [InputEntry("lorem", 1, 0), InputEntry("ipsum", 1, 0)]
         assert nested.derivations == {}
         assert nested.layout is Layout.Inline
         assert nested.keyed_analytic("count").keys == ["lorem", "ipsum"]
         first = across.keyed_group("first")
         assert first.layout is Layout.Appendix
-        assert first.inputs == [InputEntry("lorem", 1, 0)]
         assert list(first.derivations) == ["lorem", "ipsum"]
         assert first.derivations["lorem"].failure is None
         assert isinstance(first.derivations["ipsum"].failure, Failure)
@@ -411,10 +402,6 @@ class TestGroup(unittest.TestCase):
         assert positions.keyed_group(1).title == "1"
         assert positions.keyed_group(0).layout is Layout.Section
         assert positions.keyed_group(0).derivations == {}
-        assert positions.keyed_group(0).inputs == [
-            InputEntry("lorem", 1, 0),
-            InputEntry("ipsum", 1, 0),
-        ]
         assert positions.keyed_group(1).keyed_analytic("count").keys == [
             "lorem",
             "ipsum",
@@ -447,7 +434,6 @@ class TestGroup(unittest.TestCase):
             )
         ).group("nodes")
 
-        assert failing.inputs == [InputEntry("medrecord", 2, 0)]
         assert failing.entries == []
         assert failing.derivation is not None
         assert isinstance(failing.derivation.failure, Failure)
