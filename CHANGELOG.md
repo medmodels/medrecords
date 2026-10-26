@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-10-26
+
+### Breaking Changes
+
+- analysis report refactoring and styling adjustment (#21)
+
+### Refactoring
+
+- analysis report refactoring and styling adjustment (#21)
+
 ## [0.3.0] - 2026-10-25
 
 ### Breaking Changes
