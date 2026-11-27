@@ -17,7 +17,7 @@
 
 # MedRecords
 
-MedRecords is an opinionated wrapper around [GraphRecords](https://github.com/medmodels/graphrecords) for medical data. It puts a graph record to work in a medical context and makes it the input medical analyses and products run on.
+MedRecords is an opinionated wrapper around [GraphRecords](https://github.com/medmodels/graphrecords) for medical data. It puts a graph record to work in a medical context and makes it the input medical analyses and products run on. MedRecords is in early and active development. See [roadmap](#roadmap).
 
 ## Installation
 
@@ -156,6 +156,16 @@ Report.from_json("report.json")
 
 Document(report).to_pdf("report.pdf")
 ```
+
+## Roadmap
+
+- [x] `MedRecord` on top of `GraphRecord`
+- [x] OMOP vocabulary
+- [x] Evaluation framework with reports and JSON and PDF export
+- [ ] Opinionated handling of medical data in any source shape
+- [ ] OMOP mapping
+- [ ] FHIR connector
+- [ ] R bindings
 
 ## Documentation
 
